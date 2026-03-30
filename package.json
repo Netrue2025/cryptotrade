@@ -1,0 +1,14 @@
+{
+  "name": "trade-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Crypto-only trading MVP with admin dashboard, user mirroring, and Binance spot integration.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check lib/db.js && node --check lib/security.js && node --check lib/binance.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

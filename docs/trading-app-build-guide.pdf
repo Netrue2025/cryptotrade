@@ -1,0 +1,2287 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /F1 2 0 R /F2 3 0 R >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+4 0 obj
+<< /Length 3319 >>
+stream
+BT
+0.07 0.12 0.24 rg
+/F2 20 Tf
+1 0 0 1 54 790.00 Tm (Trading App Build Guide) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 760.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 741.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 722.00 Tm (Research date: March 28, 2026) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 703.00 Tm (Prepared for: mobile-first beginner-friendly crypto + fiat trading app) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 684.00 Tm (Reference baseline used: `trading_app_best_practices.pdf` supplied by user, expanded with) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 665.00 Tm (current official API and integration docs.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 646.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 627.00 Tm (1. Product Goal) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 603.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 584.00 Tm (Build a simple, modern, mobile-first trading app with these core flows:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 565.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 546.00 Tm (1. App opens with a branded animated trading icon splash screen, then transitions into the) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 527.00 Tm (   main dashboard.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 508.00 Tm (2. Dashboard shows a premium balance card at the top in USDT plus local-currency) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 489.00 Tm (   equivalent.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 470.00 Tm (3. User can switch the displayed local currency between NGN, QAR, BRL, and GBP.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 451.00 Tm (4. App displays current FX reference rates from those four fiat currencies to USDT.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 432.00 Tm (5. App provides a fiat exchange section for buying or selling crypto through regulated on-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 413.00 Tm (   ramp/off-ramp providers.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 394.00 Tm (6. App displays a short watchlist of top cryptocurrencies with live prices from Binance.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 375.00 Tm (7. User can connect one or more Binance accounts in Settings so trades placed in the app) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 356.00 Tm (   can be replicated across connected accounts.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 337.00 Tm (8. App supports light and dark mode, with light mode as the default.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 318.00 Tm (9. UI should be seamless, robust, beginner-friendly, and mobile-first.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 299.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 280.00 Tm (2. Important Product Clarifications) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 256.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 237.00 Tm (2.1 Separate three different concerns) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 216.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 197.00 Tm (Do not treat these as one system:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 178.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 159.00 Tm (1. Crypto market data and crypto order execution) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 140.00 Tm (2. Fiat FX reference data for display and conversions) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 121.00 Tm (3. Fiat exchange execution and settlement) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 102.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 83.00 Tm (Best practice is:) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 1 of 18) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 3309 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (1. Use Binance for crypto market data and crypto trade execution.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (2. Use a dedicated FX provider for fiat exchange-rate display.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (3. Use a licensed on-ramp/off-ramp or exchange provider for real fiat conversion and) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (   settlement.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm (This separation keeps the app more accurate, easier to scale, and much safer from a compliance) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm (perspective.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 638.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 619.00 Tm (2.2 Binance account connection) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm (Inference from Binance's current authenticated API model: implement Binance account linking) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (with user-generated API credentials, not with the user's Binance password. The frontend should) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm (never receive or store secrets in plaintext. All authenticated Binance operations should be) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm (executed server-side.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 484.00 Tm (2.3 Quote vs executable price) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 463.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 444.00 Tm (The balance card and rates panel can show reference prices.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 425.00 Tm (The fiat exchange screen must request a fresh executable quote before the user confirms a) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 406.00 Tm (transaction.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 387.00 Tm (Do not use a dashboard FX midpoint as the final payable amount.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 368.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 349.00 Tm (3. Recommended Technical Architecture) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 325.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 306.00 Tm (3.1 Frontend) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 285.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 266.00 Tm (Recommended stack:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 247.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 228.00 Tm (- Expo + React Native + TypeScript) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 209.00 Tm (- Expo Router for app navigation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 190.00 Tm (- Zustand for lightweight client state) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 171.00 Tm (- TanStack Query for network state and caching) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 152.00 Tm (- React Hook Form + Zod for forms and validation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 133.00 Tm (- NativeWind or a token-driven styling layer for consistent theming) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 114.00 Tm (- React Native Reanimated for splash and card transitions) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 95.00 Tm (- Expo SecureStore only for temporary local session tokens, never for Binance API secrets) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 76.00 Tm () Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 2 of 18) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 2981 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (Why this stack:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- Cross-platform mobile-first delivery) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- Smooth animation support) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- Fast iteration in Codex) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm (- Clean separation between UI state and server state) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm (- Easier beginner-friendly UX than a web-first trading terminal) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 638.00 Tm (3.2 Backend) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm (Recommended stack:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (- Node.js + TypeScript) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm (- NestJS or Fastify-based service architecture) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm (- PostgreSQL for primary relational storage) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm (- Redis for caching, pub/sub, websocket fan-out, and idempotency helpers) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 484.00 Tm (- BullMQ or equivalent queue for multi-account trade replication) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 465.00 Tm (- WebSocket gateway for pushing live prices and status updates to clients) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 446.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 427.00 Tm (Backend services should be split into modules:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 408.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 389.00 Tm (- Auth service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 370.00 Tm (- User/profile/settings service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 351.00 Tm (- FX market data service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 332.00 Tm (- Crypto market data service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 313.00 Tm (- Binance account integration service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 294.00 Tm (- Trade execution service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 275.00 Tm (- Multi-account replication worker) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 256.00 Tm (- Fiat on-ramp/off-ramp integration service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 237.00 Tm (- Notification/webhook service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 218.00 Tm (- Audit and observability service) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 199.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 180.00 Tm (3.3 Infrastructure) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 159.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 140.00 Tm (Recommended production hosting:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 121.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 102.00 Tm (- Mobile app: Expo EAS build pipeline) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 83.00 Tm (- API services: Dockerized services on AWS, GCP, or a managed VPS platform) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 3 of 18) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 2804 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (- Database: managed PostgreSQL) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (- Cache/queues: managed Redis) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- Secrets: AWS KMS, Google Cloud KMS, HashiCorp Vault, or equivalent) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- Monitoring: Sentry + OpenTelemetry + structured logs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 695.00 Tm (4. UX and Visual Direction) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 671.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 652.00 Tm (4.1 Overall style) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 631.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 612.00 Tm (The app should feel clean and premium, not cluttered like a pro desktop terminal.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 593.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 574.00 Tm (Design rules:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 555.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 536.00 Tm (- Mobile-first layout from the start) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 517.00 Tm (- Light mode default) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 498.00 Tm (- Dark mode available from the header/profile/settings) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 479.00 Tm (- High-contrast balance card at the top) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 460.00 Tm (- Large tap targets and simple labels) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 441.00 Tm (- Use icons only where they improve recognition) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 422.00 Tm (- Avoid dense tables on mobile; prefer cards, segmented controls, sheets, and compact) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 403.00 Tm (  watchlist rows) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 384.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 365.00 Tm (4.2 Suggested information architecture) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 344.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 325.00 Tm (Tabs:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 306.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 287.00 Tm (1. Home) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 268.00 Tm (2. Exchange) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 249.00 Tm (3. Trade) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 230.00 Tm (4. Accounts) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 211.00 Tm (5. Settings) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 192.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 173.00 Tm (Home screen sections:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 154.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 135.00 Tm (1. Animated splash to dashboard transition) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 116.00 Tm (2. Main balance card) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 97.00 Tm (3. Currency switcher: NGN, QAR, BRL, GBP) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 78.00 Tm (4. FX rate cards to USDT) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 4 of 18) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 2850 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (5. Top crypto watchlist) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (6. Quick actions: Buy, Sell, Convert, Trade, Add Binance Account) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 733.00 Tm (4.3 Splash screen best practice) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 712.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 693.00 Tm (Use a branded trading icon animation lasting about 800ms to 1600ms while:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 674.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 655.00 Tm (- loading user session) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 636.00 Tm (- warming rate caches) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm (- fetching theme and preferred local currency) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm (- connecting websocket channels) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (Do not make the splash screen fake-loading if startup work is already complete.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm (If bootstrap finishes early, move into the dashboard quickly.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 503.00 Tm (4.4 Balance card best practice) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 482.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 463.00 Tm (Top card should show:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 444.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 425.00 Tm (- Total portfolio in USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 406.00 Tm (- Local equivalent in selected currency) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 387.00 Tm (- 24h change in both absolute and percentage form) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 368.00 Tm (- Quick hide/show balance toggle) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 349.00 Tm (- Subtext: "Indicative local conversion" when the value is reference-priced, not executable) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 330.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 311.00 Tm (4.5 Beginner-friendly copy) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 290.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 271.00 Tm (Prefer labels like:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 252.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 233.00 Tm (- Buy Crypto) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 214.00 Tm (- Sell Crypto) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 195.00 Tm (- Convert Currency) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 176.00 Tm (- Connect Binance Account) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 157.00 Tm (- Live Market Prices) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 138.00 Tm (- Estimated You Receive) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 119.00 Tm (- Network Fee) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 100.00 Tm (- Provider Fee) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 81.00 Tm (- Confirm Trade) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 5 of 18) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 12 0 R >>
+endobj
+14 0 obj
+<< /Length 2908 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (Avoid pro jargon on the first layer. Put advanced fields inside expandable sections.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 733.00 Tm (5. Feature-by-Feature Build Guidance) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 709.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 690.00 Tm (5.1 Dashboard balance in USDT and local currency) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 669.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 650.00 Tm (Recommended data model:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 631.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 612.00 Tm (- canonical display balance: USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 593.00 Tm (- local_currency: enum of `NGN | QAR | BRL | GBP`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 574.00 Tm (- local_equivalent: derived value from current FX reference rate) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 555.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 536.00 Tm (Formula:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 517.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 498.00 Tm (`local_equivalent = usdt_balance * usdt_to_local_rate`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 479.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 460.00 Tm (Store the user's selected display currency in profile settings and cache it locally for) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 441.00 Tm (instant app re-open.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 422.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 403.00 Tm (5.2 Current exchange-rate section) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 382.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 363.00 Tm (You asked for live rates from the four fiat currencies to USDT.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 344.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 325.00 Tm (Recommended approach:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 306.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 287.00 Tm (- Use a dedicated FX provider websocket for the rates panel.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 268.00 Tm (- Subscribe only to the 4 required pairs to reduce noise.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 249.00 Tm (- If direct `FIAT/USDT` pairs are unavailable from the chosen provider, synthesize them from) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 230.00 Tm (  supported pairs and clearly mark them as derived.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 211.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 192.00 Tm (Display format example:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 173.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 154.00 Tm (- `1 USDT = 1,540.25 NGN`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 135.00 Tm (- `1 USDT = 3.64 QAR`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 116.00 Tm (- `1 USDT = 5.03 BRL`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 97.00 Tm (- `1 USDT = 0.79 GBP`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 78.00 Tm () Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 6 of 18) Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 14 0 R >>
+endobj
+16 0 obj
+<< /Length 2907 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (For clarity in the UI, prefer `USDT -> Local` on cards and let users tap to invert.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 752.00 Tm (5.3 Fiat exchange section) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 731.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 712.00 Tm (This section should not directly move money by your own custom ledger unless you are licensed) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 693.00 Tm (to do that.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 674.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 655.00 Tm (Best-practice execution flow:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 636.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm (1. User picks country/currency, crypto asset, and amount.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm (2. Backend checks available regulated providers for that country and pair.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm (3. Backend fetches live executable quotes.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (4. UI shows provider, fees, estimated receive amount, and processing time.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm (5. User confirms.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm (6. App opens provider checkout or hosted flow, or uses provider API flow.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm (7. Provider webhook updates status back into your app.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 484.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 465.00 Tm (For MVP, start with:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 446.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 427.00 Tm (- quote retrieval) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 408.00 Tm (- provider selection) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 389.00 Tm (- redirect or embedded provider checkout) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 370.00 Tm (- webhook-based transaction status) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 351.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 332.00 Tm (Do not attempt in-app custody, treasury management, or manual settlement in version 1.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 313.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 294.00 Tm (5.4 Live crypto market section) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 273.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 254.00 Tm (Keep this simple for beginners.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 235.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 216.00 Tm (Recommended watchlist for v1:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 197.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 178.00 Tm (- BTC/USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 159.00 Tm (- ETH/USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 140.00 Tm (- BNB/USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 121.00 Tm (- SOL/USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 102.00 Tm (- XRP/USDT) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 83.00 Tm (- ADA/USDT) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 7 of 18) Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 16 0 R >>
+endobj
+18 0 obj
+<< /Length 3002 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (Per row show:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- symbol) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- last price) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm (- 24h percentage change) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm (- mini sparkline optional in phase 2) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 638.00 Tm (5.5 Binance account connection and mirrored trading) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm (This is the most sensitive feature in the whole app.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (Recommended account model:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm (- User can add multiple Binance accounts in Settings.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm (- Each account gets a nickname, permissions summary, status, and last sync time.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 484.00 Tm (- User chooses which accounts are active for mirrored trading.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 465.00 Tm (- User selects replication mode:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 446.00 Tm (- same size) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 427.00 Tm (- fixed USDT amount) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 408.00 Tm (- percentage of account balance) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 389.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 370.00 Tm (Trade replication workflow:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 351.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 332.00 Tm (1. User places a trade intent in your app.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 313.00 Tm (2. Backend validates symbol, side, quantity, and user permissions.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 294.00 Tm (3. System creates a master trade record.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 275.00 Tm (4. Queue fans out child execution jobs for each connected Binance account.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 256.00 Tm (5. Each job performs risk checks, precision normalization, and signed Binance order) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 237.00 Tm (   submission.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 218.00 Tm (6. Result is persisted per account.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 199.00 Tm (7. Binance user data streams reconcile fills, partial fills, cancellations, and rejects.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 180.00 Tm (8. UI receives per-account statuses in real time.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 161.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 142.00 Tm (Non-negotiable safeguards:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 123.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 104.00 Tm (- per-account idempotency key) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 85.00 Tm (- max slippage rule) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 8 of 18) Tj
+ET
+endstream
+endobj
+19 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 18 0 R >>
+endobj
+20 0 obj
+<< /Length 2879 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (- allowed symbol list) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (- min/max order amount per account) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- safe precision handling from exchange filters) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- partial failure isolation so one failing account does not break others) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- detailed audit log for every order attempt) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 676.00 Tm (6. Data Sources and APIs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 652.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 633.00 Tm (This section lists the recommended current official sources researched on March 28, 2026.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 614.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 595.00 Tm (6.1 Binance market data and trading) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 574.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 555.00 Tm (Use Binance for:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 536.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 517.00 Tm (- live crypto market data) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 498.00 Tm (- symbol metadata) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 479.00 Tm (- order placement) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 460.00 Tm (- order status updates) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 441.00 Tm (- account update streams) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 422.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 403.00 Tm (Recommended endpoints and streams:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 384.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 365.00 Tm (1. Spot WebSocket base:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 346.00 Tm (- `wss://stream.binance.com:9443`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 327.00 Tm (- or `wss://stream.binance.com:443`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 308.00 Tm (2. Combined stream format:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 289.00 Tm (- `/stream?streams=<stream1>/<stream2>`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 270.00 Tm (3. Price bootstrap:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 251.00 Tm (- `GET /api/v3/ticker/price`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 232.00 Tm (4. New order:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 213.00 Tm (- `POST /api/v3/order`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 194.00 Tm (5. Test order before production rollout:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 175.00 Tm (- `POST /api/v3/order/test`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 156.00 Tm (6. User account/order updates:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 137.00 Tm (- Binance Spot User Data Stream via WebSocket API using API key authentication) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 118.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 99.00 Tm (Recommended watchlist stream examples:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 80.00 Tm () Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 9 of 18) Tj
+ET
+endstream
+endobj
+21 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 20 0 R >>
+endobj
+22 0 obj
+<< /Length 3194 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (- `btcusdt@miniTicker`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (- `ethusdt@miniTicker`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- `bnbusdt@miniTicker`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- `solusdt@miniTicker`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- `xrpusdt@miniTicker`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm (- `adausdt@miniTicker`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm (Best-practice note:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 638.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 619.00 Tm (Use REST for initial hydration, then switch to websocket updates. If websocket disconnects,) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 600.00 Tm (fall back to REST snapshot plus reconnect.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 581.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 562.00 Tm (6.2 Recommended FX websocket for fiat-to-USDT display) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm (Recommended primary source for the rates panel:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 484.00 Tm (- OpenExchangeAPI WebSocket) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 465.00 Tm (- WebSocket endpoint: `wss://api.openexchangeapi.com/v1/ws/rates`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 446.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 427.00 Tm (Why it fits this app:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 408.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 389.00 Tm (- official websocket docs are available) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 370.00 Tm (- docs state support for subscribing to currency pairs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 351.00 Tm (- the platform exposes a currencies endpoint for fiat and crypto assets) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 332.00 Tm (- simpler integration for a dashboard than building your own FX aggregation layer in v1) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 313.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 294.00 Tm (Recommended usage:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 275.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 256.00 Tm (1. Attempt direct subscriptions for the required displayed pairs if supported by your plan) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 237.00 Tm (   and pair catalog.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 218.00 Tm (2. If a direct `FIAT/USDT` pair is not available, derive the display rate using supported) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 199.00 Tm (   intermediary pairs and label it as derived in logs or internal metadata.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 180.00 Tm (3. Refresh the displayed local equivalent from websocket updates, but request a fresh) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 161.00 Tm (   execution quote separately inside the exchange flow.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 142.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 123.00 Tm (Important limitation:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 104.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 85.00 Tm (OpenExchangeAPI documentation says live rates are updated every 60 seconds. That is usually) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 10 of 18) Tj
+ET
+endstream
+endobj
+23 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 22 0 R >>
+endobj
+24 0 obj
+<< /Length 3048 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (acceptable for reference display, but not sufficient as an executable quote for payment) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (settlement.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 733.00 Tm (6.3 Fiat exchange execution provider) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 712.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 693.00 Tm (Recommended v1 approach:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 674.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 655.00 Tm (- use a regulated on-ramp/off-ramp aggregator instead of building settlement yourself) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 636.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm (Good candidate:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm (- Onramper) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm (Why it fits the requested app:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm (- supports both widget and API integration) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 484.00 Tm (- aggregates 30+ providers and 130+ payment methods according to its current docs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 465.00 Tm (- has endpoints to discover supported onramps by country and currency) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 446.00 Tm (- has quote endpoints and a transaction-intent endpoint) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 427.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 408.00 Tm (Suggested use inside your app:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 389.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 370.00 Tm (- use the API for provider discovery and quotes) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 351.00 Tm (- use hosted checkout or a provider redirect for final settlement in MVP) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 332.00 Tm (- use webhooks to reconcile statuses back into the app timeline) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 313.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 294.00 Tm (Important jurisdiction note:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 275.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 256.00 Tm (Country and payment-method support can change. Before launch, verify support specifically for) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 237.00 Tm (Nigeria, Qatar, Brazil, and the United Kingdom in staging and in commercial onboarding.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 218.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 199.00 Tm (7. Security and Compliance Best Practices) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 175.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 156.00 Tm (This product touches financial data and trade execution. Treat security as a feature, not a) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 137.00 Tm (later add-on.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 118.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 99.00 Tm (7.1 Binance credentials) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 78.00 Tm () Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 11 of 18) Tj
+ET
+endstream
+endobj
+25 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 24 0 R >>
+endobj
+26 0 obj
+<< /Length 3281 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (- Never collect Binance login passwords.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (- Collect only API credentials or public-key based credentials supported by Binance.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- Store credentials only on the backend.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- Encrypt secrets at rest with envelope encryption.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- Decrypt only inside execution workers.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm (- Mask all secrets in logs, traces, and admin screens.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm (- Encourage users to disable withdrawal permissions on any API credential used for your app.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 638.00 Tm (7.2 API key types) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm (Binance currently documents Ed25519, HMAC, and RSA API key types, with Ed25519 recommended.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (Best-practice implementation:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 522.00 Tm (- prefer Ed25519 where your chosen Binance client/signing workflow supports it cleanly) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 503.00 Tm (- keep the signing layer abstract so key-type support can evolve without a major refactor) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 484.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 465.00 Tm (7.3 User permissions and confirmations) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 444.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 425.00 Tm (Require the user to explicitly opt in before enabling mirrored trading.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 406.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 387.00 Tm (Minimum controls:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 368.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 349.00 Tm (- master enable/disable switch) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 330.00 Tm (- account-level enable/disable switch) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 311.00 Tm (- max trade size per account) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 292.00 Tm (- allowed symbols list) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 273.00 Tm (- paper-trading or simulation mode before real trading) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 254.00 Tm (- risk disclosure and confirmation logs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 235.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 216.00 Tm (7.4 Compliance) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 195.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 176.00 Tm (Before production launch, confirm legal and licensing obligations for:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 157.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 138.00 Tm (- offering fiat exchange or on-ramp/off-ramp flows) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 119.00 Tm (- storing and processing personal information for KYC-linked flows) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 100.00 Tm (- operating in Nigeria, Qatar, Brazil, and the UK) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 81.00 Tm (- marketing copy related to trading returns or automated strategies) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 12 of 18) Tj
+ET
+endstream
+endobj
+27 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 26 0 R >>
+endobj
+28 0 obj
+<< /Length 2866 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (Best practice is to make fiat settlement provider-led and keep your app as orchestration plus) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (user interface unless you have licensed coverage.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 714.00 Tm (8. Reliability and Performance) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 690.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 671.00 Tm (8.1 Market data reliability) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 650.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 631.00 Tm (- hydrate from REST) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 612.00 Tm (- stream updates over websocket) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 593.00 Tm (- maintain heartbeats and reconnect backoff) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 574.00 Tm (- cache the last good snapshot in Redis) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 555.00 Tm (- use stale-data labels if the stream is delayed) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 536.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 517.00 Tm (8.2 Trade execution reliability) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 496.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 477.00 Tm (- queue every execution request) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 458.00 Tm (- use idempotency keys) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 439.00 Tm (- separate placement from reconciliation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 420.00 Tm (- subscribe to user data streams for final state confirmation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 401.00 Tm (- retry only when safe and only with idempotency protection) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 382.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 363.00 Tm (8.3 Mobile performance) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 342.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 323.00 Tm (- lazy load secondary screens) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 304.00 Tm (- virtualize long lists) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 285.00 Tm (- compress icons and images) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 266.00 Tm (- avoid rendering large charts on the home screen in v1) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 247.00 Tm (- batch websocket updates before committing UI state) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 228.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 209.00 Tm (9. Suggested Database Model) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 185.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 166.00 Tm (Core tables/entities:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 147.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 128.00 Tm (- users) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 109.00 Tm (- user_profiles) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 90.00 Tm (- user_preferences) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 71.00 Tm (- binance_accounts) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 13 of 18) Tj
+ET
+endstream
+endobj
+29 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 28 0 R >>
+endobj
+30 0 obj
+<< /Length 2603 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (- binance_account_permissions) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (- balance_snapshots) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- fx_rate_snapshots) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- crypto_watchlist_snapshots) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- trade_intents) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm (- child_trade_executions) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm (- execution_events) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm (- fiat_quotes) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 638.00 Tm (- fiat_transactions) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 619.00 Tm (- webhook_events) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 600.00 Tm (- audit_logs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 581.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 562.00 Tm (Key fields for `binance_accounts`:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 543.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 524.00 Tm (- `id`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 505.00 Tm (- `user_id`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 486.00 Tm (- `nickname`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 467.00 Tm (- `api_key_public`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 448.00 Tm (- `encrypted_secret`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 429.00 Tm (- `key_type`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 410.00 Tm (- `status`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 391.00 Tm (- `permissions_json`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 372.00 Tm (- `is_mirroring_enabled`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 353.00 Tm (- `created_at`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 334.00 Tm (- `updated_at`) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 315.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 296.00 Tm (10. Settings Page Requirements) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 272.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 253.00 Tm (Settings should include:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 234.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 215.00 Tm (- theme toggle: light or dark) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 196.00 Tm (- default display currency: NGN, QAR, BRL, GBP) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 177.00 Tm (- connect Binance account) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 158.00 Tm (- manage connected accounts) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 139.00 Tm (- mirrored trading controls) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 120.00 Tm (- notification preferences) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 101.00 Tm (- privacy and consent text) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 82.00 Tm (- support/contact/help center link) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 14 of 18) Tj
+ET
+endstream
+endobj
+31 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 30 0 R >>
+endobj
+32 0 obj
+<< /Length 2694 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (Each connected Binance account card should show:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- nickname) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- connection status) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm (- trading permission state) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 676.00 Tm (- mirrored trading toggle) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 657.00 Tm (- last successful sync) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 638.00 Tm (- remove account action) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 619.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 600.00 Tm (11. Recommended Delivery Plan) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 576.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 557.00 Tm (Phase 1: foundation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 536.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 517.00 Tm (- auth) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 498.00 Tm (- splash screen) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 479.00 Tm (- light/dark theme system) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 460.00 Tm (- dashboard shell) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 441.00 Tm (- static balance card) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 422.00 Tm (- currency switcher) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 403.00 Tm (- top crypto list with mock data) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 384.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 365.00 Tm (Phase 2: live market data) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 344.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 325.00 Tm (- Binance price bootstrap) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 306.00 Tm (- Binance miniTicker streams) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 287.00 Tm (- FX websocket integration) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 268.00 Tm (- rate cards and local balance conversion) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 249.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 230.00 Tm (Phase 3: account linking and safe execution) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 209.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 190.00 Tm (- Settings account management) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 171.00 Tm (- encrypted credential storage) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 152.00 Tm (- order test flow using Binance test endpoint) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 133.00 Tm (- real order flow with one connected account) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 114.00 Tm (- user data stream reconciliation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 95.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 76.00 Tm (Phase 4: multi-account trade replication) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 15 of 18) Tj
+ET
+endstream
+endobj
+33 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 32 0 R >>
+endobj
+34 0 obj
+<< /Length 3141 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (- replication modes) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (- queue fan-out) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (- per-account status tracking) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm (- failure isolation and audit logs) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 695.00 Tm () Tj
+0.16 0.30 0.52 rg
+/F2 12 Tf
+1 0 0 1 54 676.00 Tm (Phase 5: fiat exchange) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 655.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 636.00 Tm (- provider discovery) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 617.00 Tm (- quote flow) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 598.00 Tm (- checkout handoff) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 579.00 Tm (- webhook reconciliation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 560.00 Tm (- transaction history UI) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 541.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 522.00 Tm (12. Acceptance Criteria for v1) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 498.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 479.00 Tm (The app is ready for MVP when all of the following are true:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 460.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 441.00 Tm (1. App opens into a short branded animated splash and lands on the dashboard smoothly.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 422.00 Tm (2. Dashboard shows total balance in USDT and selected local-currency equivalent.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 403.00 Tm (3. Currency switcher supports NGN, QAR, BRL, and GBP.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 384.00 Tm (4. Rates panel updates automatically without manual refresh.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 365.00 Tm (5. Top crypto prices update live from Binance.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 346.00 Tm (6. User can safely add and manage Binance accounts from Settings.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 327.00 Tm (7. Trade placement can be mirrored to enabled accounts with isolated status tracking.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 308.00 Tm (8. Fiat exchange flow can fetch executable quotes and complete via a compliant provider) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 289.00 Tm (   flow.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 270.00 Tm (9. Light mode is default; dark mode works consistently.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 251.00 Tm (10. UI works cleanly on small mobile screens first.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 232.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 213.00 Tm (13. Risks to Address Early) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 189.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 170.00 Tm (Highest-risk areas:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 151.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 132.00 Tm (1. Secure storage and signing of Binance credentials) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 113.00 Tm (2. Multi-account trade replication edge cases) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 94.00 Tm (3. Jurisdiction-specific fiat exchange support) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 75.00 Tm (4. Websocket reconnect behavior and stale data handling) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 16 of 18) Tj
+ET
+endstream
+endobj
+35 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 34 0 R >>
+endobj
+36 0 obj
+<< /Length 3764 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (5. Precision and filter handling on Binance orders) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (6. Clear beginner UX around fees, slippage, and execution status) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 733.00 Tm (14. Recommended Build Prompt for Codex) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 709.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 690.00 Tm (Use this when you hand the document to Codex:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 671.00 Tm () Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 652.00 Tm (Build a mobile-first trading app using Expo React Native and a Node.js TypeScript) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 634.00 Tm (backend. The app must have an animated splash screen, a beginner-friendly) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 616.00 Tm (dashboard, a premium balance card in USDT and local-currency equivalent, a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 598.00 Tm (currency switcher for NGN/QAR/BRL/GBP, live crypto prices from Binance, live FX) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 580.00 Tm (display rates, a fiat exchange module using a regulated provider integration, a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 562.00 Tm (Settings page for connecting multiple Binance accounts, and safe mirrored trading) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 544.00 Tm (across enabled accounts. Use light mode by default, include dark mode, keep the UI) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 526.00 Tm (modern and simple, and implement secure backend-only handling for Binance) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54 508.00 Tm (credentials and trade execution.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 490.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 471.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 452.00 Tm (15. Source Notes) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 428.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 409.00 Tm (Primary sources researched on March 28, 2026:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 390.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 371.00 Tm (1. Binance Spot WebSocket Streams: https://developers.binance.com/docs/binance-spot-api-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 352.00 Tm (   docs/web-socket-streams) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 333.00 Tm (2. Binance Spot Market Data endpoints: https://developers.binance.com/docs/binance-spot-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 314.00 Tm (   api-docs/rest-api/market-data-endpoints) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 295.00 Tm (3. Binance Spot Trading endpoints: https://developers.binance.com/docs/binance-spot-api-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 276.00 Tm (   docs/rest-api/trading-endpoints) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 257.00 Tm (4. Binance Spot User Data Stream: https://developers.binance.com/docs/binance-spot-api-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 238.00 Tm (   docs/user-data-stream) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 219.00 Tm (5. Binance API Key Types: https://developers.binance.com/docs/binance-spot-api-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 200.00 Tm (   docs/faqs/api_key_types) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 181.00 Tm (6. OpenExchangeAPI documentation: https://openexchangeapi.com/en-us/documentation/) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 162.00 Tm (7. Onramper Supported Defaults endpoint: https://docs.onramper.com/reference/get_supported-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 143.00 Tm (   defaults-all) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 124.00 Tm (8. Onramper Supported Onramps endpoint: https://docs.onramper.com/reference/get_supported-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 105.00 Tm (   onramps) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 86.00 Tm (9. Onramper Transaction Intent endpoint: https://docs.onramper.com/reference/post_checkout-) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 17 of 18) Tj
+ET
+endstream
+endobj
+37 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 36 0 R >>
+endobj
+38 0 obj
+<< /Length 1538 >>
+stream
+BT
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 790.00 Tm (   intent) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 771.00 Tm (10. Onramper Buy Quotes endpoint: https://docs.onramper.com/reference/get_quotes-fiat-crypto) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 752.00 Tm (11. Onramper Sell Quotes endpoint: https://docs.onramper.com/reference/get_quotes-crypto-) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 733.00 Tm (   fiat) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 714.00 Tm () Tj
+0.10 0.22 0.46 rg
+/F2 15 Tf
+1 0 0 1 54 695.00 Tm (16. Final Recommendation) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 671.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 652.00 Tm (If you want the cleanest path to a strong MVP:) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 633.00 Tm () Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 614.00 Tm (1. Build the mobile app first with Expo React Native.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 595.00 Tm (2. Keep Binance execution fully server-side.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 576.00 Tm (3. Use Binance only for crypto trading and live crypto prices.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 557.00 Tm (4. Use a separate FX provider for displayed fiat conversion rates.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 538.00 Tm (5. Use a regulated on-ramp/off-ramp provider for real fiat exchange.) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 519.00 Tm (6. Launch single-account trading first, then enable multi-account replication after strong) Tj
+0 0 0 rg
+/F1 10.5 Tf
+1 0 0 1 54 500.00 Tm (   logging and reconciliation are proven.) Tj
+/F1 9 Tf
+0.35 0.35 0.35 rg
+1 0 0 1 485.28 24 Tm (Page 18 of 18) Tj
+ET
+endstream
+endobj
+39 0 obj
+<< /Type /Page /Parent 40 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font 1 0 R >> /Contents 38 0 R >>
+endobj
+40 0 obj
+<< /Type /Pages /Count 18 /Kids [5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R 19 0 R 21 0 R 23 0 R 25 0 R 27 0 R 29 0 R 31 0 R 33 0 R 35 0 R 37 0 R 39 0 R] >>
+endobj
+41 0 obj
+<< /Type /Catalog /Pages 40 0 R >>
+endobj
+42 0 obj
+<< /Title (Trading App Build Guide) /Producer (Codex Minimal PDF Renderer) >>
+endobj
+xref
+0 43
+0000000000 65535 f 
+0000000015 00000 n 
+0000000056 00000 n 
+0000000126 00000 n 
+0000000201 00000 n 
+0000003572 00000 n 
+0000003695 00000 n 
+0000007056 00000 n 
+0000007179 00000 n 
+0000010212 00000 n 
+0000010335 00000 n 
+0000013192 00000 n 
+0000013317 00000 n 
+0000016220 00000 n 
+0000016345 00000 n 
+0000019306 00000 n 
+0000019431 00000 n 
+0000022391 00000 n 
+0000022516 00000 n 
+0000025571 00000 n 
+0000025696 00000 n 
+0000028628 00000 n 
+0000028753 00000 n 
+0000032000 00000 n 
+0000032125 00000 n 
+0000035226 00000 n 
+0000035351 00000 n 
+0000038685 00000 n 
+0000038810 00000 n 
+0000041729 00000 n 
+0000041854 00000 n 
+0000044510 00000 n 
+0000044635 00000 n 
+0000047382 00000 n 
+0000047507 00000 n 
+0000050701 00000 n 
+0000050826 00000 n 
+0000054643 00000 n 
+0000054768 00000 n 
+0000056359 00000 n 
+0000056484 00000 n 
+0000056660 00000 n 
+0000056711 00000 n 
+trailer
+<< /Size 43 /Root 41 0 R /Info 42 0 R >>
+startxref
+56805
+%%EOF
