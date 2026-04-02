@@ -897,6 +897,28 @@ body[data-theme="dark"] .section-loading-card {
   font-weight: 900;
 }
 
+.exchange-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.exchange-bybit {
+  background: rgba(255, 196, 61, 0.18);
+  color: #b78103;
+}
+
+.exchange-binance {
+  background: rgba(37, 212, 140, 0.16);
+  color: #149c63;
+}
+
 .status-pending {
   background: rgba(255, 196, 61, 0.18);
   color: #b78103;

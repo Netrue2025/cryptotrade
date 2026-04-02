@@ -2084,12 +2084,17 @@ async function handleApi(req, res, url) {
     if (!user) {
       return true;
     }
+    const exchange = normalizeExchange(url.searchParams.get("exchange"), getPreferredExchange(user));
     await waitForTradeReconciliation();
     const trades =
       user.role === "admin"
-        ? db.tradeIntents.map(serializeTradeForAdmin)
+        ? db.tradeIntents.filter((trade) => getTradeExchange(trade) === exchange).map(serializeTradeForAdmin)
         : db.tradeIntents
-            .filter((trade) => trade.mirroredExecutions.some((row) => row.userId === user.id))
+            .filter(
+              (trade) =>
+                getTradeExchange(trade) === exchange &&
+                trade.mirroredExecutions.some((row) => row.userId === user.id)
+            )
             .map((trade) => serializeTradeForUser(trade, user.id));
     sendJson(res, 200, { trades });
     return true;

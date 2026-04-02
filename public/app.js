@@ -1047,12 +1047,17 @@ function renderTradeStatusBadge(status) {
   return `<span class="trade-status-badge ${statusClass(status)}">${status}</span>`;
 }
 
+function renderExchangeBadge(exchange) {
+  const label = getExchangeLabel(exchange);
+  return `<span class="exchange-badge exchange-${escapeHtml(exchange)}">${label}</span>`;
+}
+
 async function refreshTradeStatusData() {
   if (!state.user) {
     return;
   }
   try {
-    const payload = await api("/api/trades");
+    const payload = await api(`/api/trades?exchange=${encodeURIComponent(getActiveExchange())}`);
     const nextTrades = payload.trades || [];
     let nextOpenOrders = [];
     if (state.user.exchangeConnected) {
@@ -1284,7 +1289,7 @@ async function loadDashboardData() {
     : Promise.resolve().then(() => {
         state.loadingAccount = false;
       });
-  const tradesPromise = api("/api/trades");
+  const tradesPromise = api(`/api/trades?exchange=${encodeURIComponent(getActiveExchange())}`);
   const usersPromise = state.user.role === "admin"
     ? api("/api/admin/users")
     : Promise.resolve({ users: [] });
@@ -1615,7 +1620,7 @@ function renderAiSignalCard() {
       <div class="section-head">
         <div>
           <h3>AI Market Pulse</h3>
-          <p class="muted-copy">Live top pump and top dip from ${getExchangeLabel(getActiveExchange())} movers with strong turnover.</p>
+          <p class="muted-copy">Live top pump and top dip from ${getExchangeLabel(getActiveExchange())} spot movers with strong turnover.</p>
         </div>
       </div>
       <div class="ai-grid">
@@ -1658,6 +1663,7 @@ function renderPendingOrderDisclosure(order, options = {}) {
       <summary class="trade-summary-row">
         <div>
           <strong>${order.symbol}</strong>
+          <p class="muted-copy">${renderExchangeBadge(getActiveExchange())}</p>
           <p class="muted-copy">${order.side} ${order.type} | Remaining ${formatNumber(remainingQty, 8)}</p>
         </div>
         <div class="asset-values">
@@ -1730,6 +1736,7 @@ function renderOpenOrdersSection() {
                       <summary class="trade-summary-row">
                         <div>
                           <strong>${trade.symbol}</strong>
+                          <p class="muted-copy">${renderExchangeBadge(trade.exchange || getActiveExchange())}</p>
                           <p class="muted-copy" data-trade-current-value>${formatUsdtUnit(currentValue)}</p>
                         </div>
                         <div class="asset-values">
@@ -1784,7 +1791,7 @@ function renderOpenOrdersSection() {
         <div class="section-head">
           <div>
             <h3>Open Orders</h3>
-            <p class="muted-copy">Live ${getExchangeLabel(getActiveExchange())} orders that are still waiting to fill.</p>
+            <p class="muted-copy">Live ${getExchangeLabel(getActiveExchange())} spot orders that are still waiting to fill.</p>
           </div>
         </div>
         <div class="compact-list">
@@ -1871,13 +1878,14 @@ function renderSettingsPane() {
               ? state.users
                   .map(
                     (user) => `
-                      <div class="asset-card">
-                        <div>
-                          <strong>${user.name}</strong>
-                          <p class="muted-copy">${user.email}</p>
-                        </div>
-                        <div class="asset-values">
-                          <strong>${user.exchangeConnected ? `${getExchangeLabel(user.activeExchange)} linked` : "No exchange linked"}</strong>
+                    <div class="asset-card">
+                      <div>
+                        <strong>${user.name}</strong>
+                        <p class="muted-copy">${user.email}</p>
+                        <p class="muted-copy">${renderExchangeBadge(user.activeExchange || "bybit")}</p>
+                      </div>
+                      <div class="asset-values">
+                        <strong>${user.exchangeConnected ? `${getExchangeLabel(user.activeExchange)} linked` : "No exchange linked"}</strong>
                           <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"} | Bybit ${user.bybitConnected ? "on" : "off"} | Binance ${user.binanceConnected ? "on" : "off"}</p>
                         </div>
                       </div>
@@ -1889,6 +1897,7 @@ function renderSettingsPane() {
                   <div>
                     <strong>${state.user.name}</strong>
                     <p class="muted-copy">${state.user.email}</p>
+                    <p class="muted-copy">${renderExchangeBadge(activeExchange)}</p>
                   </div>
                   <div class="asset-values">
                     <strong>${state.user.exchangeConnected ? `${activeExchangeLabel} linked` : `No ${activeExchangeLabel} linked`}</strong>
@@ -1970,6 +1979,7 @@ function renderHistoryContent() {
               }
               <div>
                 <strong>${trade.symbol}</strong>
+                <p class="muted-copy">${renderExchangeBadge(trade.exchange || getActiveExchange())}</p>
                 <p class="muted-copy">${trade.side} ${trade.type} | ${new Date(trade.createdAt).toLocaleString()}</p>
                 <p class="muted-copy trade-meta-line" data-trade-current>Current ${currentPrice ? formatNumber(currentPrice, 8) : "-"}</p>
                 <p class="muted-copy">Live value <span data-trade-current-value>${formatUsdtUnit(currentValue)}</span></p>
