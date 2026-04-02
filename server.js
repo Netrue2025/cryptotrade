@@ -356,17 +356,48 @@ async function getMarketWatchlist(testnet = false) {
     return watchlistCache.items;
   }
 
-  const items = await Promise.all(
-    MARKET_WATCHLIST_SYMBOLS.map((symbol) =>
-      getTickerPrice(symbol, testnet).catch(() => ({
-        symbol,
-        price: "0",
-        priceChangePercent: "0",
-        volume24h: "0",
-        turnover24h: "0",
-      }))
-    )
-  );
+  let items = [];
+  try {
+    const allTickers = await getTicker24hr(testnet);
+    const liquidUsdtPairs = (Array.isArray(allTickers) ? allTickers : [])
+      .filter((item) => item.symbol?.endsWith("USDT") && Number(item.turnover24h || 0) > 0)
+      .sort((a, b) => Number(b.turnover24h || 0) - Number(a.turnover24h || 0));
+
+    const liquidUniverse = liquidUsdtPairs.slice(0, 80);
+    const topPump = [...liquidUniverse]
+      .sort((a, b) => {
+        const changeDiff = Number(b.priceChangePercent || 0) - Number(a.priceChangePercent || 0);
+        return changeDiff || Number(b.turnover24h || 0) - Number(a.turnover24h || 0);
+      })
+      .slice(0, 4);
+    const topDip = [...liquidUniverse]
+      .sort((a, b) => {
+        const changeDiff = Number(a.priceChangePercent || 0) - Number(b.priceChangePercent || 0);
+        return changeDiff || Number(b.turnover24h || 0) - Number(a.turnover24h || 0);
+      })
+      .slice(0, 4);
+    const anchors = MARKET_WATCHLIST_SYMBOLS
+      .map((symbol) => liquidUsdtPairs.find((item) => item.symbol === symbol))
+      .filter(Boolean);
+
+    items = [...new Map([...topPump, ...topDip, ...anchors].map((item) => [item.symbol, item])).values()].slice(0, 12);
+  } catch {
+    items = [];
+  }
+
+  if (!items.length) {
+    items = await Promise.all(
+      MARKET_WATCHLIST_SYMBOLS.map((symbol) =>
+        getTickerPrice(symbol, testnet).catch(() => ({
+          symbol,
+          price: "0",
+          priceChangePercent: "0",
+          volume24h: "0",
+          turnover24h: "0",
+        }))
+      )
+    );
+  }
 
   if (!testnet) {
     watchlistCache.items = items;
@@ -520,6 +551,94 @@ async function cancelActiveTakeProfitOrders(trade) {
   if (changed) {
     persist();
   }
+}
+
+async function cancelMirroredExecutionOrders(executions, symbol) {
+  let changed = false;
+
+  for (const mirror of executions || []) {
+    const user = db.users.find((item) => item.id === mirror.userId);
+    const nextExecution = await cancelTradeExitOrder(user, symbol, mirror.order);
+    if (!sameExecution(nextExecution, mirror.order)) {
+      mirror.order = nextExecution;
+      mirror.status = nextExecution?.status || mirror.status;
+      mirror.error = nextExecution?.cancelError || null;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+async function syncCanceledOrderInTrades(user, canceledOrder, symbol) {
+  if (!canceledOrder?.orderId) {
+    return false;
+  }
+
+  const sanitizedOrder = sanitizeExecution(canceledOrder);
+  let changed = false;
+
+  for (const trade of db.tradeIntents) {
+    if (
+      user.role === "admin" &&
+      trade.createdByUserId === user.id &&
+      trade.adminExecution?.orderId === canceledOrder.orderId
+    ) {
+      if (!sameExecution(trade.adminExecution, sanitizedOrder)) {
+        trade.adminExecution = sanitizedOrder;
+        changed = true;
+      }
+      if (await cancelMirroredExecutionOrders(trade.mirroredExecutions, trade.symbol || symbol)) {
+        changed = true;
+      }
+      continue;
+    }
+
+    for (const mirror of trade.mirroredExecutions || []) {
+      if (mirror.userId === user.id && mirror.order?.orderId === canceledOrder.orderId) {
+        if (!sameExecution(mirror.order, sanitizedOrder)) {
+          mirror.order = sanitizedOrder;
+          mirror.status = sanitizedOrder?.status || mirror.status;
+          mirror.error = sanitizedOrder?.cancelError || null;
+          changed = true;
+        }
+      }
+    }
+
+    for (const exitOrder of trade.exitOrders || []) {
+      if (
+        user.role === "admin" &&
+        trade.createdByUserId === user.id &&
+        exitOrder.adminExecution?.orderId === canceledOrder.orderId
+      ) {
+        if (!sameExecution(exitOrder.adminExecution, sanitizedOrder)) {
+          exitOrder.adminExecution = sanitizedOrder;
+          changed = true;
+        }
+        if (await cancelMirroredExecutionOrders(exitOrder.mirroredExecutions, trade.symbol || symbol)) {
+          changed = true;
+        }
+        continue;
+      }
+
+      for (const mirror of exitOrder.mirroredExecutions || []) {
+        if (mirror.userId === user.id && mirror.order?.orderId === canceledOrder.orderId) {
+          if (!sameExecution(mirror.order, sanitizedOrder)) {
+            mirror.order = sanitizedOrder;
+            mirror.status = sanitizedOrder?.status || mirror.status;
+            mirror.error = sanitizedOrder?.cancelError || null;
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    persist();
+  }
+
+  return changed;
 }
 
 function createExternalCloseExecution(quantity) {
@@ -1595,6 +1714,38 @@ async function handleApi(req, res, url) {
       user.bybit.lastValidatedAt = nowIso();
       persist();
       sendJson(res, 200, { openOrders });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  const cancelOpenOrderMatch = url.pathname.match(/^\/api\/bybit\/open-orders\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && cancelOpenOrderMatch) {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+    if (!user.bybit) {
+      sendJson(res, 400, { error: "No Bybit account connected yet." });
+      return true;
+    }
+
+    const body = await readBody(req);
+    const symbol = String(body.symbol || "").trim().toUpperCase();
+    const orderId = decodeURIComponent(cancelOpenOrderMatch[1] || "").trim();
+
+    if (!symbol || !orderId) {
+      sendJson(res, 400, { error: "Order symbol and order id are required." });
+      return true;
+    }
+
+    try {
+      const order = await cancelOrder(user.bybit, symbol, orderId);
+      user.bybit.lastValidatedAt = nowIso();
+      await syncCanceledOrderInTrades(user, order, symbol);
+      persist();
+      sendJson(res, 200, { order });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }

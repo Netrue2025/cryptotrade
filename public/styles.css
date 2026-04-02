@@ -927,6 +927,11 @@ body[data-theme="dark"] .section-loading-card {
   color: #fff;
 }
 
+.micro-btn.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .bottom-nav {
   position: fixed;
   left: 50%;
@@ -1196,7 +1201,7 @@ body[data-theme="dark"] .section-loading-card {
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .history-checkbox {

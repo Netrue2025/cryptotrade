@@ -43,6 +43,7 @@ const state = {
   showAllBalances: false,
   showAllWatchlist: false,
   expandedTradeIds: [],
+  expandedPendingOrderIds: [],
   selectedHistoryTradeIds: [],
   settingsDraft: {
     apiKey: "",
@@ -221,7 +222,8 @@ function icon(name) {
 
 function getWatchlist() {
   const base = new Map((state.watchlistSeed || []).map((item) => [item.symbol, item]));
-  return WATCH_SYMBOLS.map((symbol) => {
+  const symbols = [...new Set([...(state.watchlistSeed || []).map((item) => item.symbol), ...WATCH_SYMBOLS])];
+  return symbols.map((symbol) => {
     const seed = base.get(symbol) || { symbol, price: 0, changePercent: 0, volume24h: 0, turnover24h: 0 };
     const live = state.liveMap[symbol] || {};
     return {
@@ -265,6 +267,15 @@ function getDisplayedWatchlist() {
     return list;
   }
   return list.slice(0, 5);
+}
+
+function getTradeSymbolSuggestions() {
+  return [...new Set([
+    ...WATCH_SYMBOLS,
+    ...(state.watchlistSeed || []).map((item) => item.symbol),
+    ...(state.trades || []).map((trade) => trade.symbol),
+    ...(state.openOrders || []).map((order) => order.symbol),
+  ])].filter(Boolean);
 }
 
 function renderWatchlistRows(items) {
@@ -931,6 +942,13 @@ function refreshWatchlistDom() {
   });
 }
 
+function refreshAiSignalDom() {
+  const host = document.querySelector("[data-ai-signal-host]");
+  if (host) {
+    host.innerHTML = renderAiSignalCard();
+  }
+}
+
 function refreshTradeDom() {
   document.querySelectorAll("[data-trade-symbol-row]").forEach((row) => {
     const symbol = row.dataset.tradeSymbolRow;
@@ -1002,8 +1020,10 @@ async function refreshTradeStatusData() {
     state.trades = nextTrades;
     state.openOrders = nextOpenOrders;
     syncHistorySelection();
-    const activeOpenTradeIds = new Set(nextTrades.filter((trade) => trade.lifecycleStatus === "OPEN").map((trade) => trade.id));
-    state.expandedTradeIds = state.expandedTradeIds.filter((id) => activeOpenTradeIds.has(id));
+    const activeTradeIds = new Set(nextTrades.map((trade) => trade.id));
+    const activeOpenOrderIds = new Set(nextOpenOrders.map((order) => String(order.orderId)));
+    state.expandedTradeIds = state.expandedTradeIds.filter((id) => activeTradeIds.has(id));
+    state.expandedPendingOrderIds = state.expandedPendingOrderIds.filter((id) => activeOpenOrderIds.has(id));
     if (tradesChanged || openOrdersChanged) {
       refreshTradeSectionsDom();
     }
@@ -1033,7 +1053,10 @@ async function refreshTradeMarketData() {
   if (!state.user) {
     return;
   }
-  const symbols = [...new Set(state.trades.map((trade) => trade.symbol).filter(Boolean))];
+  const symbols = [...new Set([
+    ...state.trades.map((trade) => trade.symbol),
+    ...(state.openOrders || []).map((order) => order.symbol),
+  ].filter(Boolean))];
   if (!symbols.length) {
     return;
   }
@@ -1118,11 +1141,13 @@ async function refreshWatchlistFeed() {
     .then(() => {
       hydrateWatchlistFromSeed();
       refreshWatchlistDom();
+      refreshAiSignalDom();
     })
     .catch(() => {
       state.watchlistSeed = [];
       hydrateWatchlistFromSeed();
       refreshWatchlistDom();
+      refreshAiSignalDom();
     })
     .finally(() => {
       const shouldRender = state.loadingWatchlist;
@@ -1375,6 +1400,7 @@ function renderSummaryCard() {
 function renderTradeTicket() {
   const summary = getCurrentTradeSummary();
   const livePositive = Number(summary.live.changePercent || 0) >= 0;
+  const symbolSuggestions = getTradeSymbolSuggestions();
 
   return `
     <section class="trade-ticket">
@@ -1382,7 +1408,7 @@ function renderTradeTicket() {
         <div>
           <input id="trade-symbol" class="ticket-symbol" list="trade-symbol-list" value="${tradeDraft.symbol}" placeholder="Type pair e.g. PEPEUSDT" />
           <datalist id="trade-symbol-list">
-            ${WATCH_SYMBOLS.map((symbol) => `<option value="${symbol}"></option>`).join("")}
+            ${symbolSuggestions.map((symbol) => `<option value="${symbol}"></option>`).join("")}
           </datalist>
           <p class="ticket-change ${livePositive ? "positive" : "negative"}">${livePositive ? "+" : ""}${formatNumber(summary.live.changePercent, 2)}%</p>
         </div>
@@ -1491,26 +1517,20 @@ function renderWatchlistSection() {
 function getAiRecommendations() {
   const list = [...getWatchlist()].filter((item) => item.price > 0);
   if (!list.length) {
-    return { bestBuy: null, bestSell: null };
+    return { topPump: null, topDip: null };
   }
 
-  const maxTurnover = Math.max(...list.map((item) => Number(item.turnover24h || 0)), 1);
-  const scored = list.map((item) => {
-    const turnoverScore = Number(item.turnover24h || 0) / maxTurnover;
-    const momentumScore = Number(item.changePercent || 0);
-    const buyScore = momentumScore * 0.7 + turnoverScore * 100 * 0.3;
-    const sellScore = Math.max(-momentumScore, 0) * 0.7 + turnoverScore * 100 * 0.3;
-    return {
-      ...item,
-      turnoverScore,
-      buyScore,
-      sellScore,
-    };
-  });
-
-  const bestBuy = [...scored].sort((a, b) => b.buyScore - a.buyScore)[0] || null;
-  const bestSell = [...scored].sort((a, b) => b.sellScore - a.sellScore)[0] || null;
-  return { bestBuy, bestSell };
+  const sortedByTurnover = [...list].sort((a, b) => Number(b.turnover24h || 0) - Number(a.turnover24h || 0));
+  const liquidUniverse = sortedByTurnover.slice(0, 12);
+  const topPump = [...liquidUniverse].sort((a, b) => {
+    const changeDiff = Number(b.changePercent || 0) - Number(a.changePercent || 0);
+    return changeDiff || Number(b.turnover24h || 0) - Number(a.turnover24h || 0);
+  })[0] || null;
+  const topDip = [...liquidUniverse].sort((a, b) => {
+    const changeDiff = Number(a.changePercent || 0) - Number(b.changePercent || 0);
+    return changeDiff || Number(b.turnover24h || 0) - Number(a.turnover24h || 0);
+  })[0] || null;
+  return { topPump, topDip };
 }
 
 function buildAiTradingHint(coin, mode) {
@@ -1522,51 +1542,116 @@ function buildAiTradingHint(coin, mode) {
   const turnover = Number(coin.turnover24h || 0);
   const turnoverText = turnover > 0 ? `${formatUsdt(turnover)} 24h turnover` : "light 24h turnover";
 
-  if (mode === "buy") {
+  if (mode === "pump") {
     if (trend >= 8) {
-      return `AI read: strong upside pressure with ${turnoverText}. Best used for momentum entries after a pullback, not a reckless chase.`;
+      return `Live read: strong upside pressure with ${turnoverText}. Watch for continuation only if buyers keep defending pullbacks.`;
     }
     if (trend >= 0) {
-      return `AI read: buyers still control this tape and ${turnoverText} supports continuation. Watch for a higher-low entry.`;
+      return `Live read: buyers still control this tape and ${turnoverText} supports continuation.`;
     }
-    return `AI read: volume is active, but price is still soft. Wait for strength to return before treating this as a clean buy.`;
+    return `Live read: turnover is active, but the move is no longer a clean pump.`;
   }
 
   if (trend <= -8) {
-    return `AI read: heavy downside momentum with ${turnoverText}. Best sell candidate while trend stays weak and bounces fail.`;
+    return `Live read: heavy downside pressure with ${turnoverText}. This is the sharpest dip in the active watchlist.`;
   }
   if (trend < 0) {
-    return `AI read: sellers still have the edge and ${turnoverText} confirms pressure. Consider exits on weak rebounds.`;
+    return `Live read: sellers still have the edge and ${turnoverText} confirms the weakness.`;
   }
-  return `AI read: volume is high but downside is fading. This sell setup weakens if buyers keep reclaiming price.`;
+  return `Live read: downside is fading, so the dip signal weakens if buyers reclaim price.`;
 }
 
 function renderAiSignalCard() {
-  const { bestBuy, bestSell } = getAiRecommendations();
+  const { topPump, topDip } = getAiRecommendations();
   return `
     <section class="mobile-card ai-card${loadingClass(state.loadingWatchlist)}">
       ${state.loadingWatchlist ? renderSectionLoadingOverlay("Loading AI signals", "Reading market direction from live data") : ""}
       <div class="section-head">
         <div>
-          <h3>AI Recommend Coin</h3>
-          <p class="muted-copy">Dynamic read from top gainers, top losers, and 24h trading turnover.</p>
+          <h3>AI Market Pulse</h3>
+          <p class="muted-copy">Live top pump and top dip from Bybit movers with strong turnover.</p>
         </div>
       </div>
       <div class="ai-grid">
         <div class="ai-pick">
-          <p class="eyebrow">Best Buy</p>
-          <h4>${bestBuy ? bestBuy.symbol : "--"}</h4>
-          <p class="muted-copy">${bestBuy ? `${formatNumber(bestBuy.changePercent, 2)}% move with ${formatUsdt(bestBuy.turnover24h)} turnover.` : "Waiting for market data."}</p>
-          <p class="muted-copy">${buildAiTradingHint(bestBuy, "buy")}</p>
+          <p class="eyebrow">Top Pump</p>
+          <h4>${topPump ? topPump.symbol : "--"}</h4>
+          <p class="muted-copy">${topPump ? `${formatNumber(topPump.changePercent, 2)}% move with ${formatUsdt(topPump.turnover24h)} turnover.` : "Waiting for market data."}</p>
+          <p class="muted-copy">${buildAiTradingHint(topPump, "pump")}</p>
         </div>
         <div class="ai-pick dip">
-          <p class="eyebrow">Best Sell</p>
-          <h4>${bestSell ? bestSell.symbol : "--"}</h4>
-          <p class="muted-copy">${bestSell ? `${formatNumber(bestSell.changePercent, 2)}% move with ${formatUsdt(bestSell.turnover24h)} turnover.` : "Waiting for market data."}</p>
-          <p class="muted-copy">${buildAiTradingHint(bestSell, "sell")}</p>
+          <p class="eyebrow">Top Dip</p>
+          <h4>${topDip ? topDip.symbol : "--"}</h4>
+          <p class="muted-copy">${topDip ? `${formatNumber(topDip.changePercent, 2)}% move with ${formatUsdt(topDip.turnover24h)} turnover.` : "Waiting for market data."}</p>
+          <p class="muted-copy">${buildAiTradingHint(topDip, "dip")}</p>
         </div>
       </div>
     </section>
+  `;
+}
+
+function getPendingOrderRemainingQuantity(order) {
+  const origQty = Number(order.origQty || 0);
+  const executedQty = Number(order.executedQty || 0);
+  return Math.max(origQty - executedQty, 0) || origQty;
+}
+
+function renderPendingOrderDisclosure(order, options = {}) {
+  const { showCancel = false } = options;
+  const currentPrice = Number(getTradeCurrentMarket(order.symbol).price || 0);
+  const remainingQty = getPendingOrderRemainingQuantity(order);
+  const entryPrice = Number(order.rawPrice || order.price || 0);
+  const pnlPercent = entryPrice && currentPrice
+    ? ((currentPrice - entryPrice) / entryPrice) * 100 * (order.side === "SELL" ? -1 : 1)
+    : 0;
+  const isExpanded = state.expandedPendingOrderIds.includes(order.orderId);
+  const canCancel = showCancel && ACTIVE_API_ORDER_STATUSES.has(String(order.status || "").toUpperCase());
+
+  return `
+    <details class="trade-disclosure trade-row-rich" data-pending-order-id="${order.orderId}" data-trade-symbol-row="${order.symbol}" data-trade-entry="${entryPrice}" data-trade-side="${order.side}" data-trade-quantity="${remainingQty}" ${isExpanded ? "open" : ""}>
+      <summary class="trade-summary-row">
+        <div>
+          <strong>${order.symbol}</strong>
+          <p class="muted-copy">${order.side} ${order.type} | Remaining ${formatNumber(remainingQty, 8)}</p>
+        </div>
+        <div class="asset-values">
+          ${renderTradeStatusBadge("PENDING")}
+          <strong class="${pnlPercent >= 0 ? "positive" : "negative"}" data-trade-pnl>${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
+        </div>
+      </summary>
+      <div class="trade-disclosure-body">
+        <div class="trade-detail-grid">
+          <div class="trade-detail-pill">
+            <span>Order ID</span>
+            <strong>${String(order.orderId || "").slice(-8) || "--"}</strong>
+          </div>
+          <div class="trade-detail-pill">
+            <span>Original Qty</span>
+            <strong>${formatNumber(order.origQty, 8)}</strong>
+          </div>
+          <div class="trade-detail-pill">
+            <span>Filled Qty</span>
+            <strong>${formatNumber(order.executedQty, 8)}</strong>
+          </div>
+        </div>
+        <div class="trade-detail-lines">
+          <p class="muted-copy trade-meta-line" data-trade-entry>Entry ${entryPrice ? formatNumber(entryPrice, 8) : "Market"}</p>
+          <p class="muted-copy trade-meta-line" data-trade-current>Current ${currentPrice ? formatNumber(currentPrice, 8) : "-"}</p>
+          <p class="muted-copy">Live value <span data-trade-current-value>${formatUsdtUnit(remainingQty * currentPrice)}</span></p>
+          <p class="muted-copy">Time in force ${order.timeInForce || "Exchange default"}</p>
+          <p class="muted-copy">Status ${order.status || "NEW"}</p>
+        </div>
+        ${
+          canCancel
+            ? `
+              <div class="trade-actions-inline trade-actions-stack reveal-actions">
+                <button class="micro-btn danger" data-cancel-open-order="${order.orderId}" data-order-symbol="${order.symbol}" type="button">Cancel order</button>
+              </div>
+            `
+            : ""
+        }
+      </div>
+    </details>
   `;
 }
 
@@ -1657,24 +1742,7 @@ function renderOpenOrdersSection() {
           </div>
         </div>
         <div class="compact-list">
-          ${openOrders
-            .map(
-              (order) => `
-                <div class="ticker-row trade-row-rich" data-trade-symbol-row="${order.symbol}" data-trade-entry="${Number(order.price || 0)}" data-trade-side="${order.side}">
-                  <div>
-                    <strong>${order.symbol}</strong>
-                    <p class="muted-copy">${order.side} ${order.type}</p>
-                    <p class="muted-copy trade-meta-line" data-trade-entry>Entry ${Number(order.price || 0) ? formatNumber(order.price, 8) : "Market"}</p>
-                    <p class="muted-copy trade-meta-line" data-trade-current>Current ${formatNumber(getTradeCurrentMarket(order.symbol).price, 8)}</p>
-                  </div>
-                  <div class="asset-values">
-                    ${renderTradeStatusBadge("PENDING")}
-                    <p class="muted-copy">${Number(order.price || 0) ? formatNumber(order.price, 8) : "Waiting price"}</p>
-                  </div>
-                </div>
-              `
-            )
-            .join("") || `<p class="muted-copy">No open orders.</p>`}
+          ${openOrders.map((order) => renderPendingOrderDisclosure(order, { showCancel: true })).join("") || `<p class="muted-copy">No open orders.</p>`}
         </div>
       </div>
     </section>
@@ -1793,7 +1861,7 @@ function renderSettingsPane() {
 
 function renderSignalsPane() {
   return `
-    ${renderAiSignalCard()}
+    <div data-ai-signal-host>${renderAiSignalCard()}</div>
     ${renderWatchlistSection()}
   `;
 }
@@ -1803,11 +1871,34 @@ function renderHistoryContent() {
   const canClearHistory = state.user?.role === "admin";
   return `
     <div class="card-list">
+      <section class="mobile-card">
+        <div class="section-head">
+          <div>
+            <h3>Pending Orders</h3>
+            <p class="muted-copy">All live exchange orders still waiting to fill or cancel.</p>
+          </div>
+        </div>
+        <div class="compact-list">
+          ${(state.openOrders || []).map((order) => renderPendingOrderDisclosure(order, { showCancel: true })).join("") || `<p class="muted-copy">No pending orders right now.</p>`}
+        </div>
+      </section>
+      <section class="mobile-card">
+        <div class="section-head">
+          <div>
+            <h3>Trade Timeline</h3>
+            <p class="muted-copy">Open, pending, canceled, and closed trades all stay visible here.</p>
+          </div>
+        </div>
       ${trades
         .map((trade) => {
           const canSelectTrade = canClearHistory && isTradeClearableFromHistory(trade);
+          const entryPrice = getTradeEntryPrice(trade);
+          const currentPrice = Number(getTradeCurrentMarket(trade.symbol).price || 0);
+          const remainingQuantity = getTradeRemainingQuantity(trade);
+          const currentValue = (remainingQuantity || getTradeExecutedQuantity(trade)) * currentPrice;
+          const pnlPercent = entryPrice && currentPrice ? getTradePnlPercent(trade) : 0;
           return `
-            <div class="asset-card history-row">
+            <div class="asset-card history-row" data-trade-symbol-row="${trade.symbol}" data-trade-entry="${entryPrice}" data-trade-side="${trade.side}" data-trade-quantity="${remainingQuantity || getTradeExecutedQuantity(trade)}">
               ${
                 canClearHistory
                   ? `
@@ -1823,15 +1914,19 @@ function renderHistoryContent() {
               <div>
                 <strong>${trade.symbol}</strong>
                 <p class="muted-copy">${trade.side} ${trade.type} | ${new Date(trade.createdAt).toLocaleString()}</p>
+                <p class="muted-copy trade-meta-line" data-trade-current>Current ${currentPrice ? formatNumber(currentPrice, 8) : "-"}</p>
+                <p class="muted-copy">Live value <span data-trade-current-value>${formatUsdtUnit(currentValue)}</span></p>
               </div>
               <div class="asset-values">
                 ${renderTradeStatusBadge(trade.lifecycleStatus)}
-                <p class="muted-copy">${trade.price || "Market"}</p>
+                <strong class="${pnlPercent >= 0 ? "positive" : "negative"}" data-trade-pnl>${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
+                <p class="muted-copy trade-meta-line" data-trade-entry>Entry ${entryPrice ? formatNumber(entryPrice, 8) : "Market"}</p>
               </div>
             </div>
           `;
         })
         .join("") || `<p class="muted-copy">No trade history yet.</p>`}
+      </section>
     </div>
   `;
 }
@@ -2074,6 +2169,7 @@ function bindDashboardActions() {
       state.estimatedPnlPercent = 0;
       state.tradeMarketMap = {};
       state.expandedTradeIds = [];
+      state.expandedPendingOrderIds = [];
       state.selectedHistoryTradeIds = [];
       state.showSplash = false;
       tradeDraft = getTradeFormDefaults();
@@ -2196,6 +2292,17 @@ async function confirmMarketSell(tradeId) {
   }).catch((error) => showError(error.message));
 }
 
+async function cancelPendingOrder(orderId, symbol) {
+  await withLoading(async () => {
+    await api(`/api/bybit/open-orders/${encodeURIComponent(orderId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ symbol }),
+    });
+    await loadDashboardData();
+    showNotice(`Order ${String(orderId).slice(-8)} canceled`);
+  }).catch((error) => showError(error.message));
+}
+
 function bindTradeTicketActions() {
   const symbolInput = document.getElementById("trade-symbol");
   const typeInput = document.getElementById("trade-type");
@@ -2249,6 +2356,7 @@ function bindTradeTicketActions() {
 
 function bindTradeActionButtons() {
   bindTradeDisclosureToggles();
+  bindPendingOrderDisclosureToggles();
 
   document.querySelectorAll("[data-sell-trade]").forEach((button) => {
     button.onclick = () => submitQuickSell(button.dataset.sellTrade);
@@ -2256,6 +2364,10 @@ function bindTradeActionButtons() {
 
   document.querySelectorAll("[data-tp-trade]").forEach((button) => {
     button.onclick = () => submitQuickTakeProfit(button.dataset.tpTrade);
+  });
+
+  document.querySelectorAll("[data-cancel-open-order]").forEach((button) => {
+    button.onclick = () => cancelPendingOrder(button.dataset.cancelOpenOrder, button.dataset.orderSymbol);
   });
 }
 
@@ -2275,6 +2387,26 @@ function bindTradeDisclosureToggles() {
       }
 
       state.expandedTradeIds = state.expandedTradeIds.filter((id) => id !== tradeId);
+    };
+  });
+}
+
+function bindPendingOrderDisclosureToggles() {
+  document.querySelectorAll("[data-pending-order-id]").forEach((details) => {
+    details.ontoggle = () => {
+      const orderId = details.dataset.pendingOrderId;
+      if (!orderId) {
+        return;
+      }
+
+      if (details.open) {
+        if (!state.expandedPendingOrderIds.includes(orderId)) {
+          state.expandedPendingOrderIds = [...state.expandedPendingOrderIds, orderId];
+        }
+        return;
+      }
+
+      state.expandedPendingOrderIds = state.expandedPendingOrderIds.filter((id) => id !== orderId);
     };
   });
 }
