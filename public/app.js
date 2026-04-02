@@ -8,6 +8,10 @@ const WATCH_SYMBOLS = [
   "DOGEUSDT",
   "PEPEUSDT",
 ];
+const EXCHANGE_OPTIONS = [
+  { id: "bybit", label: "Bybit" },
+  { id: "binance", label: "Binance" },
+];
 const WATCHLIST_REFRESH_INTERVAL_MS = 15000;
 const TRADE_REFRESH_INTERVAL_MS = 10000;
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
@@ -16,6 +20,8 @@ const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR"
 const state = {
   user: null,
   theme: localStorage.getItem("tradeflow-theme") || "light",
+  authExchange: localStorage.getItem("tradeflow-auth-exchange") || "bybit",
+  selectedExchange: localStorage.getItem("tradeflow-selected-exchange") || "bybit",
   authTab: "admin-login",
   showSplash: true,
   hasShownSplash: false,
@@ -65,6 +71,24 @@ let tradeRefreshPromise = null;
 function applyTheme() {
   document.body.dataset.theme = state.theme;
   localStorage.setItem("tradeflow-theme", state.theme);
+}
+
+function getExchangeLabel(exchange) {
+  return EXCHANGE_OPTIONS.find((item) => item.id === exchange)?.label || "Bybit";
+}
+
+function setAuthExchange(exchange) {
+  state.authExchange = EXCHANGE_OPTIONS.some((item) => item.id === exchange) ? exchange : "bybit";
+  localStorage.setItem("tradeflow-auth-exchange", state.authExchange);
+}
+
+function getActiveExchange() {
+  return state.user?.activeExchange || state.selectedExchange || state.authExchange || "bybit";
+}
+
+function setSelectedExchange(exchange) {
+  state.selectedExchange = EXCHANGE_OPTIONS.some((item) => item.id === exchange) ? exchange : "bybit";
+  localStorage.setItem("tradeflow-selected-exchange", state.selectedExchange);
 }
 
 async function api(path, options = {}) {
@@ -330,7 +354,7 @@ function isTradeStrictlyOpen(trade) {
     return false;
   }
 
-  if (!state.user?.bybitConnected) {
+  if (!state.user?.exchangeConnected) {
     return true;
   }
 
@@ -338,7 +362,7 @@ function isTradeStrictlyOpen(trade) {
     return false;
   }
 
-  // Strict rule: if the connected Bybit API no longer shows an active order and no remaining
+  // Strict rule: if the connected exchange API no longer shows an active order and no remaining
   // asset balance for the trade, the app must not keep that trade inside Open Trades.
   return hasActiveOpenOrderForSymbol(trade.symbol) || hasExchangeBalanceForTrade(trade);
 }
@@ -636,7 +660,7 @@ function renderActionModal() {
             <strong id="tp-modal-preview" class="${pnlPercent >= 0 ? "positive" : "negative"}">${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
             <p id="tp-modal-preview-usdt" class="muted-copy ${pnlValue >= 0 ? "positive" : "negative"}">${pnlValue >= 0 ? "+" : ""}${formatUsdtUnit(Math.abs(pnlValue))}</p>
           </div>
-          <p class="modal-text">This updates the stored TP target and replaces the active Bybit TP order with the new value when the trade is open.</p>
+          <p class="modal-text">This updates the stored TP target and replaces the active exchange TP order with the new value when the trade is open.</p>
           <div class="modal-actions">
             <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
             <button class="button-primary shimmer-button" id="confirm-tp-btn" data-trade-id="${trade.id}" type="button">Save TP</button>
@@ -688,6 +712,11 @@ function renderAuthPane() {
   if (state.authTab === "register") {
     return `
       <form id="register-form" class="auth-form">
+        <label>Exchange
+          <select name="exchange">
+            ${EXCHANGE_OPTIONS.map((exchange) => `<option value="${exchange.id}" ${state.authExchange === exchange.id ? "selected" : ""}>${exchange.label}</option>`).join("")}
+          </select>
+        </label>
         <label>Name <input name="name" placeholder="Full name" required /></label>
         <label>Email <input name="email" type="email" placeholder="you@example.com" required /></label>
         <label>Password <input name="password" type="password" placeholder="Create password" required /></label>
@@ -699,6 +728,11 @@ function renderAuthPane() {
   const isAdmin = state.authTab === "admin-login";
   return `
     <form id="${isAdmin ? "admin" : "user"}-login-form" class="auth-form">
+      <label>Exchange
+        <select name="exchange">
+          ${EXCHANGE_OPTIONS.map((exchange) => `<option value="${exchange.id}" ${state.authExchange === exchange.id ? "selected" : ""}>${exchange.label}</option>`).join("")}
+        </select>
+      </label>
       <label>Email <input name="email" type="email" placeholder="${isAdmin ? "admin@trade.local" : "you@example.com"}" required /></label>
       <label>Password <input name="password" type="password" placeholder="${isAdmin ? "Admin password" : "Your password"}" required /></label>
       <button class="button-primary shimmer-button" type="submit">${isAdmin ? "Enter Admin App" : "Open User App"}</button>
@@ -733,7 +767,7 @@ function renderAuthLanding() {
           <div>
             <p class="eyebrow">Netrue FX</p>
             <h2>${isRegister ? "Create your user account" : "Welcome back"}</h2>
-            <p class="muted-copy">${isRegister ? "Register once, then connect and trade with confidence." : "Sign in as admin or user to continue."}</p>
+            <p class="muted-copy">${isRegister ? "Register once, then choose Binance or Bybit as your active exchange." : "Sign in as admin or user, then continue with your preferred exchange."}</p>
           </div>
         </div>
         <div class="auth-mode-row">
@@ -806,7 +840,7 @@ function renderTopbarActions() {
       <div class="brand-icon star-icon">&#9733;</div>
       <div>
         <strong>TradeFlow</strong>
-        <p>${state.user ? (state.user.role === "admin" ? "Admin Console" : "User Console") : "Crypto Spot App"}</p>
+        <p>${state.user ? `${state.user.role === "admin" ? "Admin Console" : "User Console"} | ${getExchangeLabel(getActiveExchange())}` : "Crypto Spot App"}</p>
       </div>
     </div>
   `;
@@ -872,6 +906,13 @@ function bindAuthForms() {
   const userForm = document.getElementById("user-login-form");
   const registerForm = document.getElementById("register-form");
 
+  document.querySelectorAll('form.auth-form select[name="exchange"]').forEach((select) => {
+    select.addEventListener("change", () => {
+      setAuthExchange(select.value);
+      render();
+    });
+  });
+
   if (adminForm) {
     adminForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -882,6 +923,7 @@ function bindAuthForms() {
           body: JSON.stringify(payload),
         });
         state.user = await requireSessionUser();
+        setSelectedExchange(state.user.activeExchange || payload.exchange || "bybit");
         state.activeTab = "home";
         await loadDashboardData();
         showNotice(`Welcome back, ${state.user.name}`);
@@ -899,6 +941,7 @@ function bindAuthForms() {
           body: JSON.stringify(payload),
         });
         state.user = await requireSessionUser();
+        setSelectedExchange(state.user.activeExchange || payload.exchange || "bybit");
         state.activeTab = "home";
         await loadDashboardData();
         showNotice(`Welcome back, ${state.user.name}`);
@@ -916,6 +959,7 @@ function bindAuthForms() {
           body: JSON.stringify(payload),
         });
         state.user = await requireSessionUser();
+        setSelectedExchange(state.user.activeExchange || payload.exchange || "bybit");
         state.activeTab = "home";
         await loadDashboardData();
         showNotice("Account created");
@@ -1011,8 +1055,8 @@ async function refreshTradeStatusData() {
     const payload = await api("/api/trades");
     const nextTrades = payload.trades || [];
     let nextOpenOrders = [];
-    if (state.user.bybitConnected) {
-      const openOrdersPayload = await api("/api/bybit/open-orders");
+    if (state.user.exchangeConnected) {
+      const openOrdersPayload = await api(`/api/exchange/open-orders?exchange=${encodeURIComponent(getActiveExchange())}`);
       nextOpenOrders = openOrdersPayload.openOrders || [];
     }
     const tradesChanged = JSON.stringify(nextTrades) !== JSON.stringify(state.trades);
@@ -1207,7 +1251,7 @@ async function loadDashboardData() {
   }
 
   state.loadingWatchlist = !state.watchlistSeed.length;
-  state.loadingAccount = !!(state.user.bybitConnected && !state.balances.length);
+  state.loadingAccount = !!(state.user.exchangeConnected && !state.balances.length);
   state.loadingTrades = !state.trades.length;
   state.loadingUsers = !!(state.user.role === "admin" && !state.users.length);
   render();
@@ -1225,8 +1269,8 @@ async function loadDashboardData() {
     });
 
   applyAccountSnapshot(null);
-  const accountPromise = state.user.bybitConnected
-    ? api("/api/bybit/account")
+  const accountPromise = state.user.exchangeConnected
+    ? api(`/api/exchange/account?exchange=${encodeURIComponent(getActiveExchange())}`)
         .then((account) => {
           applyAccountSnapshot(account);
           state.loadingAccount = false;
@@ -1347,27 +1391,28 @@ function renderSummaryCard() {
   const nairaBalance = Number(state.totalNgn || 0);
   const nairaRate = Number(state.usdtNgnRate || 0);
   const accountLoading = state.loadingAccount;
+  const exchangeLabel = getExchangeLabel(getActiveExchange());
   const chips =
     state.user?.role === "admin"
       ? [
           "Spot only",
           `Mirrored users ${state.users.filter((user) => user.mirrorEnabled).length}`,
-          `Connected users ${state.users.filter((user) => user.bybitConnected).length}`,
+          `Connected users ${state.users.filter((user) => user.bybitConnected || user.binanceConnected).length}`,
         ]
       : [
           "Spot only",
           state.user?.mirrorEnabled ? "Mirror enabled" : "Mirror off",
-          state.user?.bybitConnected ? "Bybit connected" : "Setup needed",
+          state.user?.exchangeConnected ? `${exchangeLabel} connected` : "Setup needed",
         ];
 
   return `
       <section class="balance-carousel">
         <article class="summary-hero balance-slide">
-          ${accountLoading ? renderSectionLoadingOverlay("Loading balances", "Syncing your Bybit balance cards") : ""}
+          ${accountLoading ? renderSectionLoadingOverlay("Loading balances", `Syncing your ${exchangeLabel} balance cards`) : ""}
           <div>
             <p class="eyebrow light">Spot Balance</p>
             <h2>${formatUsdt(state.totalUsdt)}</h2>
-            <p class="muted-bright">Live estimate based on Bybit spot balances.</p>
+            <p class="muted-bright">Live estimate based on ${exchangeLabel} spot balances.</p>
             <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h est. PnL ${state.estimatedPnlValue >= 0 ? "+" : ""}${formatUsdt(state.estimatedPnlValue)} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
           </div>
           <div class="hero-chip-row">
@@ -1384,9 +1429,9 @@ function renderSummaryCard() {
             <p class="eyebrow light">Naira Balance</p>
             <h2>${nairaBalance > 0 ? formatNaira(nairaBalance) : "--"}</h2>
             <p class="muted-bright">
-              ${nairaRate > 0 ? `Bybit fiat rate 1 USDT = ${formatNaira(nairaRate)}` : "Bybit fiat rate unavailable right now."}
+              ${nairaRate > 0 ? `${exchangeLabel} fiat rate 1 USDT = ${formatNaira(nairaRate)}` : `${exchangeLabel} fiat rate unavailable right now.`}
             </p>
-            <p class="muted-bright">Live portfolio value converted from your Bybit spot balance.</p>
+            <p class="muted-bright">Live portfolio value converted from your ${exchangeLabel} spot balance.</p>
           </div>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">Deposit</button>
@@ -1462,12 +1507,13 @@ function renderTradeTicket() {
 
 function renderBalancesSection() {
   const balances = getDisplayedBalances();
+  const exchangeLabel = getExchangeLabel(getActiveExchange());
   return `
     <section class="mobile-card${loadingClass(state.loadingAccount)}">
-      ${state.loadingAccount ? renderSectionLoadingOverlay("Loading assets", "Pulling your connected Bybit balances") : ""}
+      ${state.loadingAccount ? renderSectionLoadingOverlay("Loading assets", `Pulling your connected ${exchangeLabel} balances`) : ""}
       <div class="section-head">
         <div>
-          <h3>Connected Bybit Balances</h3>
+          <h3>Connected ${exchangeLabel} Balances</h3>
           <p class="muted-copy">Top coins first, with live USDT value.</p>
         </div>
         <button id="toggle-balances-btn" class="text-link" type="button">${state.showAllBalances ? "See less" : "See more"}</button>
@@ -1491,7 +1537,7 @@ function renderBalancesSection() {
               </div>
             `
           )
-          .join("") || `<p class="muted-copy">Connect Bybit in settings to load balances.</p>`}
+          .join("") || `<p class="muted-copy">Connect ${exchangeLabel} in settings to load balances.</p>`}
       </div>
     </section>
   `;
@@ -1569,7 +1615,7 @@ function renderAiSignalCard() {
       <div class="section-head">
         <div>
           <h3>AI Market Pulse</h3>
-          <p class="muted-copy">Live top pump and top dip from Bybit movers with strong turnover.</p>
+          <p class="muted-copy">Live top pump and top dip from ${getExchangeLabel(getActiveExchange())} movers with strong turnover.</p>
         </div>
       </div>
       <div class="ai-grid">
@@ -1738,7 +1784,7 @@ function renderOpenOrdersSection() {
         <div class="section-head">
           <div>
             <h3>Open Orders</h3>
-            <p class="muted-copy">Live Bybit orders that are still waiting to fill.</p>
+            <p class="muted-copy">Live ${getExchangeLabel(getActiveExchange())} orders that are still waiting to fill.</p>
           </div>
         </div>
         <div class="compact-list">
@@ -1751,6 +1797,8 @@ function renderOpenOrdersSection() {
 
 function renderSettingsPane() {
   const settingsDraft = state.settingsDraft || { apiKey: "", apiSecret: "", testnet: "false" };
+  const activeExchange = getActiveExchange();
+  const activeExchangeLabel = getExchangeLabel(activeExchange);
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -1768,13 +1816,22 @@ function renderSettingsPane() {
         ${state.loadingUsers ? renderSectionLoadingOverlay("Loading users", "Pulling linked account details") : ""}
         <div class="section-head">
           <div>
-            <h3>Bybit Connection</h3>
-          <p class="muted-copy">Hidden under settings to keep the dashboard clean.</p>
+            <h3>Exchange Connection</h3>
+          <p class="muted-copy">Choose the active exchange for this dashboard, then connect its API keys.</p>
         </div>
       </div>
-      <form id="bybit-connect-form" class="stack-form">
-        <label>API key <input name="apiKey" value="${escapeHtml(settingsDraft.apiKey)}" placeholder="Paste Bybit API key" required /></label>
-        <label>API secret <input name="apiSecret" type="password" value="${escapeHtml(settingsDraft.apiSecret)}" placeholder="Paste Bybit API secret" required /></label>
+      <form id="exchange-select-form" class="stack-form subtle-form">
+        <label>
+          Active exchange
+          <select name="exchange">
+            ${EXCHANGE_OPTIONS.map((exchange) => `<option value="${exchange.id}" ${activeExchange === exchange.id ? "selected" : ""}>${exchange.label}</option>`).join("")}
+          </select>
+        </label>
+      </form>
+      <form id="exchange-connect-form" class="stack-form">
+        <input type="hidden" name="exchange" value="${activeExchange}" />
+        <label>API key <input name="apiKey" value="${escapeHtml(settingsDraft.apiKey)}" placeholder="Paste ${activeExchangeLabel} API key" required /></label>
+        <label>API secret <input name="apiSecret" type="password" value="${escapeHtml(settingsDraft.apiSecret)}" placeholder="Paste ${activeExchangeLabel} API secret" required /></label>
         <label>
           Environment
           <select name="testnet">
@@ -1782,7 +1839,7 @@ function renderSettingsPane() {
             <option value="true" ${settingsDraft.testnet === "true" ? "selected" : ""}>Testnet</option>
           </select>
         </label>
-        <button class="button-primary shimmer-button" type="submit">Connect Bybit</button>
+        <button class="button-primary shimmer-button" type="submit">Connect ${activeExchangeLabel}</button>
       </form>
         ${
           state.user.role === "user"
@@ -1820,8 +1877,8 @@ function renderSettingsPane() {
                           <p class="muted-copy">${user.email}</p>
                         </div>
                         <div class="asset-values">
-                          <strong>${user.bybitConnected ? "Connected" : "Not linked"}</strong>
-                          <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"}</p>
+                          <strong>${user.exchangeConnected ? `${getExchangeLabel(user.activeExchange)} linked` : "No exchange linked"}</strong>
+                          <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"} | Bybit ${user.bybitConnected ? "on" : "off"} | Binance ${user.binanceConnected ? "on" : "off"}</p>
                         </div>
                       </div>
                     `
@@ -1834,7 +1891,7 @@ function renderSettingsPane() {
                     <p class="muted-copy">${state.user.email}</p>
                   </div>
                   <div class="asset-values">
-                    <strong>${state.user.bybitConnected ? "Bybit linked" : "No Bybit linked"}</strong>
+                    <strong>${state.user.exchangeConnected ? `${activeExchangeLabel} linked` : `No ${activeExchangeLabel} linked`}</strong>
                     <p class="muted-copy">${state.user.mirrorEnabled ? "Mirroring enabled" : "Mirroring disabled"}</p>
                   </div>
                 </div>
@@ -2025,7 +2082,31 @@ function renderDashboardShell() {
 function bindDashboardActions() {
   bindHistoryActions();
 
-  const connectForm = document.getElementById("bybit-connect-form");
+  const exchangeSelectForm = document.getElementById("exchange-select-form");
+  if (exchangeSelectForm) {
+    const exchangeSelect = exchangeSelectForm.querySelector('select[name="exchange"]');
+    if (exchangeSelect) {
+      exchangeSelect.addEventListener("change", async () => {
+        await withLoading(async () => {
+          const result = await api("/api/users/preferred-exchange", {
+            method: "POST",
+            body: JSON.stringify({ exchange: exchangeSelect.value }),
+          });
+          state.user = result.user;
+          setSelectedExchange(state.user.activeExchange || exchangeSelect.value);
+          state.settingsDraft = {
+            apiKey: "",
+            apiSecret: "",
+            testnet: "false",
+          };
+          await loadDashboardData();
+          showNotice(`${getExchangeLabel(getActiveExchange())} is now active`);
+        }).catch((error) => showError(error.message));
+      });
+    }
+  }
+
+  const connectForm = document.getElementById("exchange-connect-form");
   if (connectForm) {
     connectForm.querySelectorAll("input, select").forEach((field) => {
       field.addEventListener("input", () => {
@@ -2046,22 +2127,24 @@ function bindDashboardActions() {
       event.preventDefault();
       await withLoading(async () => {
         const data = Object.fromEntries(new FormData(connectForm).entries());
-        const result = await api("/api/bybit/connect", {
+        const result = await api("/api/exchange/connect", {
           method: "POST",
           body: JSON.stringify({
+            exchange: data.exchange || getActiveExchange(),
             apiKey: data.apiKey,
             apiSecret: data.apiSecret,
             testnet: data.testnet === "true",
           }),
         });
         state.user = result.user;
+        setSelectedExchange(state.user.activeExchange || data.exchange || getActiveExchange());
         state.settingsDraft = {
           apiKey: "",
           apiSecret: "",
           testnet: "false",
         };
         await loadDashboardData();
-        showNotice("Bybit connected successfully");
+        showNotice(`${getExchangeLabel(getActiveExchange())} connected successfully`);
       }).catch((error) => showError(error.message));
     });
   }
@@ -2294,9 +2377,9 @@ async function confirmMarketSell(tradeId) {
 
 async function cancelPendingOrder(orderId, symbol) {
   await withLoading(async () => {
-    await api(`/api/bybit/open-orders/${encodeURIComponent(orderId)}/cancel`, {
+    await api(`/api/exchange/open-orders/${encodeURIComponent(orderId)}/cancel`, {
       method: "POST",
-      body: JSON.stringify({ symbol }),
+      body: JSON.stringify({ symbol, exchange: getActiveExchange() }),
     });
     await loadDashboardData();
     showNotice(`Order ${String(orderId).slice(-8)} canceled`);
@@ -2431,6 +2514,9 @@ async function bootstrap() {
   try {
     const me = await api("/api/auth/me");
     state.user = me.user;
+    if (state.user?.activeExchange) {
+      setSelectedExchange(state.user.activeExchange);
+    }
     if (state.user) {
       await loadDashboardData();
     } else {

@@ -1,23 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
-const crypto = require("node:crypto");
 
 const { loadDb, saveDb, ensureAdminUser, sanitizeUser } = require("./lib/db");
 const { encryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
-const {
-  getAccountInfo,
-  cancelOrder,
-  getConnectivityStatus,
-  getExchangeInfo,
-  getOpenOrders,
-  getOrder,
-  getTicker24hr,
-  getTickerPrice,
-  getTickerPrices,
-  placeSpotOrder,
-  validateCredentials,
-} = require("./lib/bybit");
+const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -66,6 +53,91 @@ const watchlistCache = {
 
 function persist() {
   saveDb(db);
+}
+
+function getPreferredExchange(user) {
+  return normalizeExchange(user?.preferredExchange, "bybit");
+}
+
+function getConnectedExchange(user, preferred = getPreferredExchange(user)) {
+  if (user?.[preferred]) {
+    return preferred;
+  }
+  if (user?.bybit) {
+    return "bybit";
+  }
+  if (user?.binance) {
+    return "binance";
+  }
+  return preferred;
+}
+
+function getUserExchange(user, preferred = getPreferredExchange(user)) {
+  return user?.[getConnectedExchange(user, preferred)] || null;
+}
+
+function getExchangeAccount(user, exchange = getPreferredExchange(user)) {
+  return user?.[normalizeExchange(exchange)] || null;
+}
+
+function getExchangeLabel(exchange) {
+  return getExchangeClient(exchange).label;
+}
+
+function setUserPreferredExchange(user, exchange) {
+  user.preferredExchange = normalizeExchange(exchange, "bybit");
+}
+
+function getTradeExchange(trade) {
+  return normalizeExchange(trade?.exchange, "bybit");
+}
+
+function getAccountExchange(account, fallback = "bybit") {
+  return normalizeExchange(account?.exchange, fallback);
+}
+
+async function getAccountInfo(account, exchange = getAccountExchange(account)) {
+  return getExchangeClient(exchange).getAccountInfo(account);
+}
+
+async function cancelOrder(account, symbol, orderId, exchange = getAccountExchange(account)) {
+  return getExchangeClient(exchange).cancelOrder(account, symbol, orderId);
+}
+
+async function getConnectivityStatus(exchange, testnet) {
+  return getExchangeClient(exchange).getConnectivityStatus(testnet);
+}
+
+async function getExchangeInfo(symbol, testnet, exchange = "bybit") {
+  return getExchangeClient(exchange).getExchangeInfo(symbol, testnet);
+}
+
+async function getOpenOrders(account, exchange = getAccountExchange(account)) {
+  return getExchangeClient(exchange).getOpenOrders(account);
+}
+
+async function getOrder(account, symbol, orderId, exchange = getAccountExchange(account)) {
+  return getExchangeClient(exchange).getOrder(account, symbol, orderId);
+}
+
+async function getTicker24hr(symbolsOrTestnet = false, maybeTestnet = false, exchange = "bybit") {
+  return getExchangeClient(exchange).getTicker24hr(symbolsOrTestnet, maybeTestnet);
+}
+
+async function getTickerPrice(symbol, testnet, exchange = "bybit") {
+  return getExchangeClient(exchange).getTickerPrice(symbol, testnet);
+}
+
+async function getTickerPrices(testnet, exchange = "bybit") {
+  return getExchangeClient(exchange).getTickerPrices(testnet);
+}
+
+async function placeSpotOrder(account, orderInput, exchange = getAccountExchange(account)) {
+  return getExchangeClient(exchange).placeSpotOrder(account, orderInput);
+}
+
+async function validateCredentials(apiKey, secretEncrypted, testnet, exchange = "bybit") {
+  return getExchangeClient(exchange).validateCredentials(apiKey, secretEncrypted, testnet);
 }
 
 function nowIso() {
@@ -347,9 +419,10 @@ async function getUsdtToNgnRateFromBybitPage() {
   throw new Error("Unable to parse the Bybit USDT/NGN fiat rate.");
 }
 
-async function getMarketWatchlist(testnet = false) {
+async function getMarketWatchlist(testnet = false, exchange = "bybit") {
   if (
     !testnet &&
+    exchange === "bybit" &&
     Array.isArray(watchlistCache.items) &&
     Date.now() - watchlistCache.updatedAt < WATCHLIST_CACHE_TTL_MS
   ) {
@@ -358,7 +431,7 @@ async function getMarketWatchlist(testnet = false) {
 
   let items = [];
   try {
-    const allTickers = await getTicker24hr(testnet);
+    const allTickers = await getTicker24hr(testnet, false, exchange);
     const liquidUsdtPairs = (Array.isArray(allTickers) ? allTickers : [])
       .filter((item) => item.symbol?.endsWith("USDT") && Number(item.turnover24h || 0) > 0)
       .sort((a, b) => Number(b.turnover24h || 0) - Number(a.turnover24h || 0));
@@ -388,7 +461,7 @@ async function getMarketWatchlist(testnet = false) {
   if (!items.length) {
     items = await Promise.all(
       MARKET_WATCHLIST_SYMBOLS.map((symbol) =>
-        getTickerPrice(symbol, testnet).catch(() => ({
+        getTickerPrice(symbol, testnet, exchange).catch(() => ({
           symbol,
           price: "0",
           priceChangePercent: "0",
@@ -399,7 +472,7 @@ async function getMarketWatchlist(testnet = false) {
     );
   }
 
-  if (!testnet) {
+  if (!testnet && exchange === "bybit") {
     watchlistCache.items = items;
     watchlistCache.updatedAt = Date.now();
   }
@@ -504,13 +577,14 @@ function getActiveOpenOrdersForSymbol(openOrders, symbol) {
   );
 }
 
-async function cancelTradeExitOrder(executionOwner, symbol, execution) {
-  if (!executionOwner?.bybit || !symbol || !execution?.orderId || !isExecutionActive(execution)) {
+async function cancelTradeExitOrder(executionOwner, symbol, execution, exchange = getPreferredExchange(executionOwner)) {
+  const account = getExchangeAccount(executionOwner, exchange);
+  if (!account || !symbol || !execution?.orderId || !isExecutionActive(execution)) {
     return execution;
   }
 
   try {
-    const canceled = await cancelOrder(executionOwner.bybit, symbol, execution.orderId);
+    const canceled = await cancelOrder(account, symbol, execution.orderId, exchange);
     return sanitizeExecution(canceled);
   } catch (error) {
     return {
@@ -523,6 +597,7 @@ async function cancelTradeExitOrder(executionOwner, symbol, execution) {
 
 async function cancelActiveTakeProfitOrders(trade) {
   const admin = db.users.find((user) => user.id === trade.createdByUserId);
+  const exchange = getTradeExchange(trade);
   let changed = false;
 
   for (const exitOrder of trade.exitOrders || []) {
@@ -530,7 +605,7 @@ async function cancelActiveTakeProfitOrders(trade) {
       continue;
     }
 
-    const nextAdminExecution = await cancelTradeExitOrder(admin, trade.symbol, exitOrder.adminExecution);
+    const nextAdminExecution = await cancelTradeExitOrder(admin, trade.symbol, exitOrder.adminExecution, exchange);
     if (!sameExecution(nextAdminExecution, exitOrder.adminExecution)) {
       exitOrder.adminExecution = nextAdminExecution;
       changed = true;
@@ -538,7 +613,7 @@ async function cancelActiveTakeProfitOrders(trade) {
 
     for (const mirror of exitOrder.mirroredExecutions || []) {
       const user = db.users.find((item) => item.id === mirror.userId);
-      const nextMirrorExecution = await cancelTradeExitOrder(user, trade.symbol, mirror.order);
+      const nextMirrorExecution = await cancelTradeExitOrder(user, trade.symbol, mirror.order, exchange);
       if (!sameExecution(nextMirrorExecution, mirror.order)) {
         mirror.order = nextMirrorExecution;
         mirror.status = nextMirrorExecution?.status || mirror.status;
@@ -558,7 +633,8 @@ async function cancelMirroredExecutionOrders(executions, symbol) {
 
   for (const mirror of executions || []) {
     const user = db.users.find((item) => item.id === mirror.userId);
-    const nextExecution = await cancelTradeExitOrder(user, symbol, mirror.order);
+    const exchange = normalizeExchange(mirror.exchange, getPreferredExchange(user));
+    const nextExecution = await cancelTradeExitOrder(user, symbol, mirror.order, exchange);
     if (!sameExecution(nextExecution, mirror.order)) {
       mirror.order = nextExecution;
       mirror.status = nextExecution?.status || mirror.status;
@@ -664,7 +740,9 @@ function inferBaseAssetFromSymbol(symbol) {
 }
 
 async function reconcileExternalClosuresForOwner(trade, ownerUser, accountInfo, openOrders, exchangeInfoOverride = null, userId = null) {
-  if (!ownerUser?.bybit || trade.side !== "BUY") {
+  const exchange = getTradeExchange(trade);
+  const account = getExchangeAccount(ownerUser, exchange);
+  if (!account || trade.side !== "BUY") {
     return false;
   }
 
@@ -683,7 +761,7 @@ async function reconcileExternalClosuresForOwner(trade, ownerUser, accountInfo, 
   let minQty = 0;
   let exchangeInfo;
   try {
-    exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(trade.symbol, ownerUser.bybit.testnet));
+    exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(trade.symbol, account.testnet, exchange));
   } catch {
     exchangeInfo = null;
   }
@@ -709,8 +787,8 @@ async function reconcileExternalClosuresForOwner(trade, ownerUser, accountInfo, 
     normalizedBalance = Number(balance?.free || 0) + Number(balance?.locked || 0);
   }
 
-  // Strict rule: if Bybit no longer shows a live order for the symbol and no remaining base-asset
-  // balance is left in the account, the app must not continue showing the trade as open.
+  // Strict rule: if the connected exchange no longer shows a live order for the symbol and no
+  // remaining base-asset balance is left in the account, the app must not continue showing the trade as open.
   if ((normalizedBalance || 0) > 0 && (!minQty || normalizedBalance >= minQty)) {
     return false;
   }
@@ -746,13 +824,13 @@ function sameExecution(a, b) {
   return JSON.stringify(a || null) === JSON.stringify(b || null);
 }
 
-async function reconcileExecution(account, symbol, execution) {
+async function reconcileExecution(account, symbol, execution, exchange = getAccountExchange(account)) {
   if (!account || !symbol || !isExecutionActive(execution)) {
     return execution;
   }
 
   try {
-    const latest = await getOrder(account, symbol, execution.orderId);
+    const latest = await getOrder(account, symbol, execution.orderId, exchange);
     return sanitizeExecution(latest);
   } catch {
     return execution;
@@ -783,18 +861,19 @@ async function reconcileTradeStatuses() {
   let changed = false;
   const ownerSnapshotCache = new Map();
 
-  async function getOwnerSnapshot(user) {
-    if (!user?.bybit) {
+  async function getOwnerSnapshot(user, exchange) {
+    const account = getExchangeAccount(user, exchange);
+    if (!account) {
       return null;
     }
-    const key = user.id;
+    const key = `${user.id}:${exchange}`;
     if (ownerSnapshotCache.has(key)) {
       return ownerSnapshotCache.get(key);
     }
     try {
       const [accountInfo, openOrders] = await Promise.all([
-        getAccountInfo(user.bybit),
-        getOpenOrders(user.bybit),
+        getAccountInfo(account, exchange),
+        getOpenOrders(account, exchange),
       ]);
       const snapshot = { accountInfo, openOrders };
       ownerSnapshotCache.set(key, snapshot);
@@ -813,7 +892,9 @@ async function reconcileTradeStatuses() {
 
     try {
       const admin = db.users.find((user) => user.id === trade.createdByUserId);
-      const nextAdminExecution = await reconcileExecution(admin?.bybit, trade.symbol, trade.adminExecution);
+      const exchange = getTradeExchange(trade);
+      const adminAccount = getExchangeAccount(admin, exchange);
+      const nextAdminExecution = await reconcileExecution(adminAccount, trade.symbol, trade.adminExecution, exchange);
       if (!sameExecution(nextAdminExecution, trade.adminExecution)) {
         trade.adminExecution = nextAdminExecution;
         changed = true;
@@ -821,7 +902,13 @@ async function reconcileTradeStatuses() {
 
       for (const mirror of trade.mirroredExecutions || []) {
         const user = db.users.find((item) => item.id === mirror.userId);
-        const nextMirrorExecution = await reconcileExecution(user?.bybit, trade.symbol, mirror.order);
+        const mirrorAccount = getExchangeAccount(user, normalizeExchange(mirror.exchange, exchange));
+        const nextMirrorExecution = await reconcileExecution(
+          mirrorAccount,
+          trade.symbol,
+          mirror.order,
+          normalizeExchange(mirror.exchange, exchange)
+        );
         if (!sameExecution(nextMirrorExecution, mirror.order)) {
           mirror.order = nextMirrorExecution;
           mirror.status = nextMirrorExecution?.status || mirror.status;
@@ -831,7 +918,7 @@ async function reconcileTradeStatuses() {
       }
 
       for (const exitOrder of trade.exitOrders || []) {
-        const nextExitAdminExecution = await reconcileExecution(admin?.bybit, trade.symbol, exitOrder.adminExecution);
+        const nextExitAdminExecution = await reconcileExecution(adminAccount, trade.symbol, exitOrder.adminExecution, exchange);
         if (!sameExecution(nextExitAdminExecution, exitOrder.adminExecution)) {
           exitOrder.adminExecution = nextExitAdminExecution;
           changed = true;
@@ -839,7 +926,13 @@ async function reconcileTradeStatuses() {
 
         for (const mirror of exitOrder.mirroredExecutions || []) {
           const user = db.users.find((item) => item.id === mirror.userId);
-          const nextMirrorExecution = await reconcileExecution(user?.bybit, trade.symbol, mirror.order);
+          const mirrorAccount = getExchangeAccount(user, normalizeExchange(mirror.exchange, exchange));
+          const nextMirrorExecution = await reconcileExecution(
+            mirrorAccount,
+            trade.symbol,
+            mirror.order,
+            normalizeExchange(mirror.exchange, exchange)
+          );
           if (!sameExecution(nextMirrorExecution, mirror.order)) {
             mirror.order = nextMirrorExecution;
             mirror.status = nextMirrorExecution?.status || mirror.status;
@@ -849,13 +942,13 @@ async function reconcileTradeStatuses() {
         }
       }
 
-      const adminSnapshot = await getOwnerSnapshot(admin);
+      const adminSnapshot = await getOwnerSnapshot(admin, exchange);
       if (
         trade.adminExecution?.status === "FILLED" &&
         deriveTradeLifecycle(trade) === "OPEN" &&
         adminSnapshot
       ) {
-        const exchangeInfo = await getExchangeInfo(trade.symbol, admin.bybit.testnet).catch(() => null);
+        const exchangeInfo = await getExchangeInfo(trade.symbol, adminAccount?.testnet, exchange).catch(() => null);
         if (exchangeInfo) {
           const adminExternallyClosed = await reconcileExternalClosuresForOwner(
             trade,
@@ -873,7 +966,8 @@ async function reconcileTradeStatuses() {
             if (!user || mirror.order?.status !== "FILLED") {
               continue;
             }
-            const userSnapshot = await getOwnerSnapshot(user);
+            const mirrorExchange = normalizeExchange(mirror.exchange, exchange);
+            const userSnapshot = await getOwnerSnapshot(user, mirrorExchange);
             if (!userSnapshot) {
               continue;
             }
@@ -975,6 +1069,7 @@ function deriveTradeLifecycle(trade) {
 function serializeTradeForAdmin(trade) {
   return {
     ...trade,
+    exchange: getTradeExchange(trade),
     lifecycleStatus: deriveTradeLifecycle(trade),
   };
 }
@@ -994,6 +1089,7 @@ function serializeTradeForUser(trade, userId) {
     quantity: trade.quantity,
     quoteOrderQty: trade.quoteOrderQty,
     price: trade.price,
+    exchange: getTradeExchange(trade),
     takeProfitTargetPrice: trade.takeProfitTargetPrice,
     lifecycleStatus: deriveTradeLifecycle(trade),
     adminExecution: trade.adminExecution,
@@ -1025,7 +1121,7 @@ function normalizeOrderInput(body) {
     throw new Error("Provide quantity or quote order size for market orders.");
   }
   if (type === "MARKET" && side === "SELL" && !quantity) {
-    throw new Error("Bybit market sells require the asset quantity, not just the quote amount.");
+    throw new Error("Market sells require the asset quantity, not just the quote amount.");
   }
   if (type === "LIMIT" && (!quantity || !price)) {
     throw new Error("Limit orders require both quantity and entry price.");
@@ -1046,7 +1142,7 @@ function normalizeOrderInput(body) {
 function getSymbolFilters(exchangeInfo, symbol) {
   const details = exchangeInfo.symbols?.find((item) => item.symbol === symbol);
   if (!details) {
-    throw new Error(`Bybit symbol ${symbol} was not found.`);
+    throw new Error(`Symbol ${symbol} was not found on the selected exchange.`);
   }
   return {
     details,
@@ -1137,8 +1233,10 @@ function normalizePriceToTick(price, tickSize) {
   return formatStepNumber(normalizedUnits / scale, tickSize);
 }
 
-async function normalizeOrderForBybit(account, orderInput, exchangeInfoOverride = null) {
-  const exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(orderInput.symbol, account.testnet));
+async function normalizeOrderForExchange(account, orderInput, exchangeInfoOverride = null) {
+  const exchange = getAccountExchange(account);
+  const exchangeLabel = getExchangeLabel(exchange);
+  const exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(orderInput.symbol, account.testnet, exchange));
   const { filters } = getSymbolFilters(exchangeInfo, orderInput.symbol);
   const normalized = { ...orderInput };
 
@@ -1151,19 +1249,19 @@ async function normalizeOrderForBybit(account, orderInput, exchangeInfoOverride 
 
       if (!Number(normalizedPrice)) {
         throw new Error(
-          `Price is too small for ${normalized.symbol}. Bybit tick size for this market is ${priceFilter.tickSize}.`
+          `Price is too small for ${normalized.symbol}. ${exchangeLabel} tick size for this market is ${priceFilter.tickSize}.`
         );
       }
 
       if (minPrice && Number(normalizedPrice) < minPrice) {
         throw new Error(
-          `Price is too low for ${normalized.symbol}. Bybit requires at least ${priceFilter.minPrice} for this market.`
+          `Price is too low for ${normalized.symbol}. ${exchangeLabel} requires at least ${priceFilter.minPrice} for this market.`
         );
       }
 
       if (maxPrice && Number(normalizedPrice) > maxPrice) {
         throw new Error(
-          `Price is too high for ${normalized.symbol}. Bybit allows at most ${priceFilter.maxPrice} for this market.`
+          `Price is too high for ${normalized.symbol}. ${exchangeLabel} allows at most ${priceFilter.maxPrice} for this market.`
         );
       }
 
@@ -1187,19 +1285,19 @@ async function normalizeOrderForBybit(account, orderInput, exchangeInfoOverride 
 
   if (!Number(normalizedQuantity)) {
     throw new Error(
-      `Quantity is too small for ${normalized.symbol}. Bybit step size for this market is ${quantityFilter.stepSize}.`
+      `Quantity is too small for ${normalized.symbol}. ${exchangeLabel} step size for this market is ${quantityFilter.stepSize}.`
     );
   }
 
   if (minQty && Number(normalizedQuantity) < minQty) {
     throw new Error(
-      `Quantity is too small for ${normalized.symbol}. Bybit requires at least ${quantityFilter.minQty} units for this order type.`
+      `Quantity is too small for ${normalized.symbol}. ${exchangeLabel} requires at least ${quantityFilter.minQty} units for this order type.`
     );
   }
 
   if (maxQty && Number(normalizedQuantity) > maxQty) {
     throw new Error(
-      `Quantity is too large for ${normalized.symbol}. Bybit allows at most ${quantityFilter.maxQty} units for this order type.`
+      `Quantity is too large for ${normalized.symbol}. ${exchangeLabel} allows at most ${quantityFilter.maxQty} units for this order type.`
     );
   }
 
@@ -1208,7 +1306,9 @@ async function normalizeOrderForBybit(account, orderInput, exchangeInfoOverride 
 }
 
 async function validateNotionalRule(account, orderInput, exchangeInfoOverride = null) {
-  const exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(orderInput.symbol, account.testnet));
+  const exchange = getAccountExchange(account);
+  const exchangeLabel = getExchangeLabel(exchange);
+  const exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(orderInput.symbol, account.testnet, exchange));
   const { filters } = getSymbolFilters(exchangeInfo, orderInput.symbol);
   const notionalFilter = getFilter(filters, "NOTIONAL") || getFilter(filters, "MIN_NOTIONAL");
 
@@ -1226,7 +1326,7 @@ async function validateNotionalRule(account, orderInput, exchangeInfoOverride = 
     }
     let price = Number(orderInput.price || 0);
     if (!price) {
-      const ticker = await getTickerPrice(orderInput.symbol, account.testnet);
+      const ticker = await getTickerPrice(orderInput.symbol, account.testnet, exchange);
       price = Number(ticker.price || 0);
     }
     estimatedNotional = qty * price;
@@ -1239,7 +1339,7 @@ async function validateNotionalRule(account, orderInput, exchangeInfoOverride = 
     throw new Error(
       `Order value is too small for ${orderInput.symbol}. Estimated notional is ${estimatedNotional.toFixed(
         8
-      )} USDT, but Bybit requires at least ${minNotional} USDT for this market. Increase quantity or price before selling.`
+      )} USDT, but ${exchangeLabel} requires at least ${minNotional} USDT for this market. Increase quantity or price before selling.`
     );
   }
 
@@ -1247,7 +1347,7 @@ async function validateNotionalRule(account, orderInput, exchangeInfoOverride = 
     throw new Error(
       `Order value is too large for ${orderInput.symbol}. Estimated notional is ${estimatedNotional.toFixed(
         8
-      )} USDT, but Bybit allows at most ${maxNotional} USDT for this market.`
+      )} USDT, but ${exchangeLabel} allows at most ${maxNotional} USDT for this market.`
     );
   }
 }
@@ -1259,17 +1359,19 @@ async function getMaxSellQuantityForAccount(
   type = "MARKET",
   requestedQuantity = null
 ) {
-  const exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(symbol, account.testnet));
+  const exchange = getAccountExchange(account);
+  const exchangeLabel = getExchangeLabel(exchange);
+  const exchangeInfo = exchangeInfoOverride || (await getExchangeInfo(symbol, account.testnet, exchange));
   const { filters } = getSymbolFilters(exchangeInfo, symbol);
   const baseAsset = getBaseAssetForSymbol(exchangeInfo, symbol);
-  const accountInfo = await getAccountInfo(account);
+  const accountInfo = await getAccountInfo(account, exchange);
   const balance = (accountInfo.balances || []).find((item) => item.asset === baseAsset);
   const freeQuantity = Number(balance?.free || 0);
   const requested = Number(requestedQuantity || 0);
   const targetQuantity = requested > 0 ? Math.min(freeQuantity, requested) : freeQuantity;
 
   if (!freeQuantity) {
-    throw new Error(`No free ${baseAsset} balance is available to sell on Bybit right now.`);
+    throw new Error(`No free ${baseAsset} balance is available to sell on ${exchangeLabel} right now.`);
   }
 
   const quantityFilter = getEffectiveQuantityFilter(filters, type);
@@ -1284,47 +1386,55 @@ async function getMaxSellQuantityForAccount(
 
   if (!Number(normalizedQuantity)) {
     throw new Error(
-      `Your free ${baseAsset} balance is ${freeQuantity}, but Bybit's ${type.toLowerCase()} sell step for ${symbol} is ${quantityFilter.stepSize} with a minimum quantity of ${quantityFilter.minQty}. This balance is too small for a Bybit spot sell order.`
+      `Your free ${baseAsset} balance is ${freeQuantity}, but ${exchangeLabel}'s ${type.toLowerCase()} sell step for ${symbol} is ${quantityFilter.stepSize} with a minimum quantity of ${quantityFilter.minQty}. This balance is too small for a ${exchangeLabel} spot sell order.`
     );
   }
 
   if (minQty && Number(normalizedQuantity) < minQty) {
     throw new Error(
-      `Your free ${baseAsset} balance is ${freeQuantity}, but Bybit requires at least ${quantityFilter.minQty} ${baseAsset} for a ${type.toLowerCase()} sell on ${symbol}. This is below Bybit's minimum spot order size.`
+      `Your free ${baseAsset} balance is ${freeQuantity}, but ${exchangeLabel} requires at least ${quantityFilter.minQty} ${baseAsset} for a ${type.toLowerCase()} sell on ${symbol}. This is below ${exchangeLabel}'s minimum spot order size.`
     );
   }
 
   if (maxQty && Number(normalizedQuantity) > maxQty) {
     throw new Error(
-      `The available ${baseAsset} balance is above Bybit's allowed maximum of ${quantityFilter.maxQty} ${baseAsset} for one order.`
+      `The available ${baseAsset} balance is above ${exchangeLabel}'s allowed maximum of ${quantityFilter.maxQty} ${baseAsset} for one order.`
     );
   }
 
   return normalizedQuantity;
 }
 
-async function executeOrderForUser(user, orderInput, purpose) {
-  if (!user.bybit) {
+async function executeOrderForUser(user, orderInput, purpose, exchange) {
+  const normalizedExchange = normalizeExchange(exchange, getPreferredExchange(user));
+  const account = getExchangeAccount(user, normalizedExchange);
+  if (!account) {
     return {
       userId: user.id,
       userName: user.name,
+      exchange: normalizedExchange,
       purpose,
       status: "SKIPPED",
-      error: "No Bybit account connected.",
+      error: `No ${getExchangeLabel(normalizedExchange)} account connected.`,
       order: null,
     };
   }
 
   try {
-    const exchangeInfo = await getExchangeInfo(orderInput.symbol, user.bybit.testnet);
-    const normalizedOrderInput = await normalizeOrderForBybit(user.bybit, orderInput, exchangeInfo);
-    await validateNotionalRule(user.bybit, normalizedOrderInput, exchangeInfo);
-    const order = await placeSpotOrder(user.bybit, normalizedOrderInput);
-    user.bybit.lastValidatedAt = nowIso();
+    const exchangeInfo = await getExchangeInfo(orderInput.symbol, account.testnet, normalizedExchange);
+    const normalizedOrderInput = await normalizeOrderForExchange(
+      { ...account, exchange: normalizedExchange },
+      orderInput,
+      exchangeInfo
+    );
+    await validateNotionalRule({ ...account, exchange: normalizedExchange }, normalizedOrderInput, exchangeInfo);
+    const order = await placeSpotOrder({ ...account, exchange: normalizedExchange }, normalizedOrderInput, normalizedExchange);
+    account.lastValidatedAt = nowIso();
     persist();
     return {
       userId: user.id,
       userName: user.name,
+      exchange: normalizedExchange,
       purpose,
       status: order.status,
       error: null,
@@ -1334,6 +1444,7 @@ async function executeOrderForUser(user, orderInput, purpose) {
     return {
       userId: user.id,
       userName: user.name,
+      exchange: normalizedExchange,
       purpose,
       status: "ERROR",
       error: error.message,
@@ -1342,9 +1453,13 @@ async function executeOrderForUser(user, orderInput, purpose) {
   }
 }
 
-function getMirroringUsers() {
+function getMirroringUsers(exchange) {
   return db.users.filter(
-    (user) => user.role === "user" && user.mirrorEnabled && user.bybit && user.bybit.permissions?.canTrade
+    (user) =>
+      user.role === "user" &&
+      user.mirrorEnabled &&
+      getExchangeAccount(user, exchange) &&
+      getExchangeAccount(user, exchange).permissions?.canTrade
   );
 }
 
@@ -1368,7 +1483,9 @@ async function autoPlaceTakeProfit(trade, options = {}) {
   }
 
   const admin = db.users.find((user) => user.id === trade.createdByUserId);
-  if (!admin?.bybit) {
+  const exchange = getTradeExchange(trade);
+  const adminAccount = getExchangeAccount(admin, exchange);
+  if (!adminAccount) {
     return;
   }
 
@@ -1380,13 +1497,14 @@ async function autoPlaceTakeProfit(trade, options = {}) {
     type: "LIMIT",
     price: trade.takeProfitTargetPrice,
     quantity: String(qty),
+    exchange,
     adminExecution: null,
     mirroredExecutions: [],
   };
 
   try {
     const tpQuantity = await getMaxSellQuantityForAccount(
-      admin.bybit,
+      { ...adminAccount, exchange },
       trade.symbol,
       null,
       "LIMIT",
@@ -1400,11 +1518,11 @@ async function autoPlaceTakeProfit(trade, options = {}) {
       price: trade.takeProfitTargetPrice,
       timeInForce: "GTC",
     };
-    const exchangeInfo = await getExchangeInfo(trade.symbol, admin.bybit.testnet);
-    const normalizedExitInput = await normalizeOrderForBybit(admin.bybit, adminExitInput, exchangeInfo);
+    const exchangeInfo = await getExchangeInfo(trade.symbol, adminAccount.testnet, exchange);
+    const normalizedExitInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, adminExitInput, exchangeInfo);
     exitOrder.quantity = normalizedExitInput.quantity;
-    await validateNotionalRule(admin.bybit, normalizedExitInput, exchangeInfo);
-    const adminOrder = await placeSpotOrder(admin.bybit, normalizedExitInput);
+    await validateNotionalRule({ ...adminAccount, exchange }, normalizedExitInput, exchangeInfo);
+    const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedExitInput, exchange);
     exitOrder.adminExecution = sanitizeExecution(adminOrder);
   } catch (error) {
     exitOrder.adminExecution = sanitizeExecution(null, error.message);
@@ -1413,10 +1531,11 @@ async function autoPlaceTakeProfit(trade, options = {}) {
   for (const mirror of trade.mirroredExecutions || []) {
     const user = db.users.find((item) => item.id === mirror.userId);
     const childQty = getRemainingTradeQuantity(trade, mirror.userId);
-    if (!user || !user.bybit || !childQty) {
+    if (!user || !getExchangeAccount(user, exchange) || !childQty) {
       exitOrder.mirroredExecutions.push({
         userId: mirror.userId,
         userName: mirror.userName,
+        exchange,
         purpose: "TAKE_PROFIT",
         status: "SKIPPED",
         error: "No filled quantity available for take profit.",
@@ -1430,11 +1549,18 @@ async function autoPlaceTakeProfit(trade, options = {}) {
         symbol: trade.symbol,
         side: "SELL",
         type: "LIMIT",
-        quantity: await getMaxSellQuantityForAccount(user.bybit, trade.symbol, null, "LIMIT", childQty),
+        quantity: await getMaxSellQuantityForAccount(
+          { ...getExchangeAccount(user, exchange), exchange },
+          trade.symbol,
+          null,
+          "LIMIT",
+          childQty
+        ),
         price: trade.takeProfitTargetPrice,
         timeInForce: "GTC",
       },
-      "TAKE_PROFIT"
+      "TAKE_PROFIT",
+      exchange
     );
     exitOrder.mirroredExecutions.push(childOrder);
   }
@@ -1483,7 +1609,7 @@ function clearSessionCookie(req, res) {
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/auth/me") {
     const user = getCurrentUser(req);
-    sendJson(res, 200, { user: user ? sanitizeUser(user) : null });
+    sendJson(res, 200, { user: user ? sanitizeUser(user) : null, exchanges: listExchanges() });
     return true;
   }
 
@@ -1492,6 +1618,7 @@ async function handleApi(req, res, url) {
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
     const name = String(body.name || "").trim();
+    const exchange = normalizeExchange(body.exchange, "bybit");
 
     if (!email || !password || !name) {
       sendJson(res, 400, { error: "Name, email, and password are required." });
@@ -1511,6 +1638,8 @@ async function handleApi(req, res, url) {
       mirrorEnabled: false,
       passwordSalt: salt,
       passwordHash: hash,
+      preferredExchange: exchange,
+      binance: null,
       bybit: null,
       createdAt: nowIso(),
     };
@@ -1525,6 +1654,7 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
+    const exchange = normalizeExchange(body.exchange, "bybit");
     const user = db.users.find((item) => item.email === email);
 
     if (!user || !verifyPassword(password, user.passwordSalt, user.passwordHash)) {
@@ -1533,6 +1663,8 @@ async function handleApi(req, res, url) {
     }
 
     const session = createSession(user.id);
+    setUserPreferredExchange(user, exchange);
+    persist();
     sendSessionCookie(req, res, session.id);
     sendJson(res, 200, { user: sanitizeUser(user) });
     return true;
@@ -1547,7 +1679,10 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/market/watchlist") {
     try {
-      const watchlist = await getMarketWatchlist(false);
+      const currentUser = getCurrentUser(req);
+      const exchange = currentUser ? getPreferredExchange(currentUser) : "bybit";
+      const testnet = !!getExchangeAccount(currentUser, exchange)?.testnet;
+      const watchlist = await getMarketWatchlist(testnet, exchange);
       sendJson(res, 200, { watchlist });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
@@ -1569,9 +1704,12 @@ async function handleApi(req, res, url) {
     }
 
     try {
+      const currentUser = getCurrentUser(req);
+      const exchange = currentUser ? getPreferredExchange(currentUser) : "bybit";
+      const testnet = !!getExchangeAccount(currentUser, exchange)?.testnet;
       const [prices, stats] = await Promise.all([
-        Promise.all(symbols.map((symbol) => getTickerPrice(symbol, false))),
-        getTicker24hr(symbols, false),
+        Promise.all(symbols.map((symbol) => getTickerPrice(symbol, testnet, exchange))),
+        getTicker24hr(symbols, testnet, exchange),
       ]);
 
       const statsArray = Array.isArray(stats) ? stats : [stats];
@@ -1586,6 +1724,167 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { prices: payload });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/exchange/diagnostics") {
+    const exchange = normalizeExchange(url.searchParams.get("exchange"), "bybit");
+    const testnet = url.searchParams.get("testnet") === "true";
+    try {
+      const result = await getConnectivityStatus(exchange, testnet);
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/exchange/connect") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    const body = await readBody(req);
+    const exchange = normalizeExchange(body.exchange, getPreferredExchange(user));
+    const exchangeLabel = getExchangeLabel(exchange);
+    const apiKey = String(body.apiKey || "").trim();
+    const apiSecret = String(body.apiSecret || "").trim();
+    const testnet = !!body.testnet;
+
+    if (!apiKey || !apiSecret) {
+      sendJson(res, 400, { error: `${exchangeLabel} API key and secret are required.` });
+      return true;
+    }
+
+    try {
+      const secretEncrypted = encryptSecret(apiSecret);
+      const accountInfo = await validateCredentials(apiKey, secretEncrypted, testnet, exchange);
+      user[exchange] = {
+        exchange,
+        apiKey,
+        secretEncrypted,
+        testnet,
+        permissions: {
+          canTrade: !!accountInfo.canTrade,
+          canWithdraw: !!accountInfo.canWithdraw,
+          canDeposit: !!accountInfo.canDeposit,
+          readOnly: !!accountInfo.readOnly,
+        },
+        connectedAt: nowIso(),
+        lastValidatedAt: nowIso(),
+      };
+      setUserPreferredExchange(user, exchange);
+      persist();
+      sendJson(res, 200, {
+        user: sanitizeUser(user),
+        account: {
+          balances: toSafeBalances(accountInfo),
+          permissions: user[exchange].permissions,
+        },
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/exchange/account") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+    const exchange = normalizeExchange(url.searchParams.get("exchange"), getPreferredExchange(user));
+    const account = getExchangeAccount(user, exchange);
+    if (!account) {
+      sendJson(res, 404, { error: `No ${getExchangeLabel(exchange)} account connected yet.` });
+      return true;
+    }
+
+    try {
+      const [accountInfo, openOrders, tickers, stats24h, usdtNgnRate] = await Promise.all([
+        getAccountInfo(account, exchange),
+        getOpenOrders(account, exchange),
+        getTickerPrices(account.testnet, exchange),
+        getTicker24hr(account.testnet, false, exchange),
+        getUsdtToNgnRateFromBybitPage().catch(() => null),
+      ]);
+      const enrichedBalances = enrichBalancesWithUsdtValue(toSafeBalances(accountInfo), tickers);
+      const balances = addBalanceFiatValue(addBalanceMarketStats(enrichedBalances, stats24h), usdtNgnRate);
+      const pnl = calculatePortfolioPnl(balances);
+      account.lastValidatedAt = nowIso();
+      persist();
+      sendJson(res, 200, {
+        exchange,
+        balances,
+        totalUsdt: pnl.totalUsdt,
+        totalNgn: Number(usdtNgnRate || 0) > 0 ? pnl.totalUsdt * Number(usdtNgnRate) : 0,
+        usdtNgnRate: Number(usdtNgnRate || 0),
+        estimatedPnlValue: pnl.estimatedPnlValue,
+        estimatedPnlPercent: pnl.estimatedPnlPercent,
+        permissions: account.permissions,
+        openOrders,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/exchange/open-orders") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+    const exchange = normalizeExchange(url.searchParams.get("exchange"), getPreferredExchange(user));
+    const account = getExchangeAccount(user, exchange);
+    if (!account) {
+      sendJson(res, 200, { openOrders: [] });
+      return true;
+    }
+
+    try {
+      const openOrders = await getOpenOrders(account, exchange);
+      account.lastValidatedAt = nowIso();
+      persist();
+      sendJson(res, 200, { openOrders, exchange });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  const cancelExchangeOpenOrderMatch = url.pathname.match(/^\/api\/exchange\/open-orders\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && cancelExchangeOpenOrderMatch) {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    const body = await readBody(req);
+    const exchange = normalizeExchange(body.exchange, getPreferredExchange(user));
+    const account = getExchangeAccount(user, exchange);
+    if (!account) {
+      sendJson(res, 400, { error: `No ${getExchangeLabel(exchange)} account connected yet.` });
+      return true;
+    }
+
+    const symbol = String(body.symbol || "").trim().toUpperCase();
+    const orderId = decodeURIComponent(cancelExchangeOpenOrderMatch[1] || "").trim();
+    if (!symbol || !orderId) {
+      sendJson(res, 400, { error: "Order symbol and order id are required." });
+      return true;
+    }
+
+    try {
+      const order = await cancelOrder(account, symbol, orderId, exchange);
+      account.lastValidatedAt = nowIso();
+      await syncCanceledOrderInTrades(user, order, symbol);
+      persist();
+      sendJson(res, 200, { order, exchange });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
     }
     return true;
   }
@@ -1720,6 +2019,19 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/users/preferred-exchange") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    const body = await readBody(req);
+    setUserPreferredExchange(user, body.exchange);
+    persist();
+    sendJson(res, 200, { user: sanitizeUser(user) });
+    return true;
+  }
+
   const cancelOpenOrderMatch = url.pathname.match(/^\/api\/bybit\/open-orders\/([^/]+)\/cancel$/);
   if (req.method === "POST" && cancelOpenOrderMatch) {
     const user = requireAuth(req, res);
@@ -1832,23 +2144,27 @@ async function handleApi(req, res, url) {
     if (!admin) {
       return true;
     }
-    if (!admin.bybit) {
-      sendJson(res, 400, { error: "Connect the admin Bybit account first." });
+    const exchange = getPreferredExchange(admin);
+    const exchangeLabel = getExchangeLabel(exchange);
+    const adminAccount = getExchangeAccount(admin, exchange);
+    if (!adminAccount) {
+      sendJson(res, 400, { error: `Connect the admin ${exchangeLabel} account first.` });
       return true;
     }
 
     try {
       const body = await readBody(req);
       const orderInput = normalizeOrderInput(body);
-      const exchangeInfo = await getExchangeInfo(orderInput.symbol, admin.bybit.testnet);
-      const normalizedOrderInput = await normalizeOrderForBybit(admin.bybit, orderInput, exchangeInfo);
-      await validateNotionalRule(admin.bybit, normalizedOrderInput, exchangeInfo);
-      const adminOrder = await placeSpotOrder(admin.bybit, normalizedOrderInput);
+      const exchangeInfo = await getExchangeInfo(orderInput.symbol, adminAccount.testnet, exchange);
+      const normalizedOrderInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, orderInput, exchangeInfo);
+      await validateNotionalRule({ ...adminAccount, exchange }, normalizedOrderInput, exchangeInfo);
+      const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedOrderInput, exchange);
       const trade = {
         id: randomId(12),
         createdAt: nowIso(),
         createdByUserId: admin.id,
         createdByName: admin.name,
+        exchange,
         symbol: normalizedOrderInput.symbol,
         side: normalizedOrderInput.side,
         type: normalizedOrderInput.type,
@@ -1862,8 +2178,8 @@ async function handleApi(req, res, url) {
         exitOrders: [],
       };
 
-      for (const follower of getMirroringUsers()) {
-        const child = await executeOrderForUser(follower, normalizedOrderInput, "ENTRY");
+      for (const follower of getMirroringUsers(exchange)) {
+        const child = await executeOrderForUser(follower, normalizedOrderInput, "ENTRY", exchange);
         trade.mirroredExecutions.push(child);
       }
 
@@ -1871,7 +2187,7 @@ async function handleApi(req, res, url) {
       persist();
       const tpOrder = await autoPlaceTakeProfit(trade, { force: true });
       if (tpOrder?.adminExecution?.status === "ERROR") {
-        throw new Error(tpOrder.adminExecution.error || "Unable to place the take-profit order on Bybit.");
+        throw new Error(tpOrder.adminExecution.error || `Unable to place the take-profit order on ${exchangeLabel}.`);
       }
       sendJson(res, 201, { trade: serializeTradeForAdmin(trade) });
     } catch (error) {
@@ -1886,13 +2202,15 @@ async function handleApi(req, res, url) {
     if (!admin) {
       return true;
     }
-    if (!admin.bybit) {
-      sendJson(res, 400, { error: "Connect the admin Bybit account first." });
-      return true;
-    }
     const trade = db.tradeIntents.find((item) => item.id === takeProfitMatch[1]);
     if (!trade) {
       sendJson(res, 404, { error: "Trade not found." });
+      return true;
+    }
+    const exchange = getTradeExchange(trade);
+    const adminAccount = getExchangeAccount(admin, exchange);
+    if (!adminAccount) {
+      sendJson(res, 400, { error: `Connect the admin ${getExchangeLabel(exchange)} account first.` });
       return true;
     }
 
@@ -1908,7 +2226,7 @@ async function handleApi(req, res, url) {
     await cancelActiveTakeProfitOrders(trade);
     const tpOrder = await autoPlaceTakeProfit(trade, { force: true });
     if (tpOrder?.adminExecution?.status === "ERROR") {
-      sendJson(res, 400, { error: tpOrder.adminExecution.error || "Unable to place the take-profit order on Bybit." });
+      sendJson(res, 400, { error: tpOrder.adminExecution.error || `Unable to place the take-profit order on ${getExchangeLabel(exchange)}.` });
       return true;
     }
     sendJson(res, 200, { trade: serializeTradeForAdmin(trade) });
@@ -1921,25 +2239,27 @@ async function handleApi(req, res, url) {
     if (!admin) {
       return true;
     }
-    if (!admin.bybit) {
-      sendJson(res, 400, { error: "Connect the admin Bybit account first." });
-      return true;
-    }
 
     const trade = db.tradeIntents.find((item) => item.id === sellPreviewMatch[1]);
     if (!trade) {
       sendJson(res, 404, { error: "Trade not found." });
       return true;
     }
+    const exchange = getTradeExchange(trade);
+    const adminAccount = getExchangeAccount(admin, exchange);
+    if (!adminAccount) {
+      sendJson(res, 400, { error: `Connect the admin ${getExchangeLabel(exchange)} account first.` });
+      return true;
+    }
 
     try {
-      const exchangeInfo = await getExchangeInfo(trade.symbol, admin.bybit.testnet);
+      const exchangeInfo = await getExchangeInfo(trade.symbol, adminAccount.testnet, exchange);
       const { filters } = getSymbolFilters(exchangeInfo, trade.symbol);
       const previewStepSize = getEffectiveQuantityFilter(filters, "MARKET")?.stepSize || "1";
       const quantity = getActiveTakeProfitOrders(trade).length
         ? normalizeQuantityToStep(getRemainingTradeQuantity(trade), previewStepSize)
-        : await getMaxSellQuantityForAccount(admin.bybit, trade.symbol, exchangeInfo, "MARKET");
-      const ticker = await getTickerPrice(trade.symbol, admin.bybit.testnet);
+        : await getMaxSellQuantityForAccount({ ...adminAccount, exchange }, trade.symbol, exchangeInfo, "MARKET");
+      const ticker = await getTickerPrice(trade.symbol, adminAccount.testnet, exchange);
       const currentPrice = Number(ticker.price || 0);
       const baseAsset = getBaseAssetForSymbol(exchangeInfo, trade.symbol);
 
@@ -1969,8 +2289,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Trade not found." });
       return true;
     }
-    if (!admin.bybit) {
-      sendJson(res, 400, { error: "Connect the admin Bybit account first." });
+    const exchange = getTradeExchange(trade);
+    const adminAccount = getExchangeAccount(admin, exchange);
+    if (!adminAccount) {
+      sendJson(res, 400, { error: `Connect the admin ${getExchangeLabel(exchange)} account first.` });
       return true;
     }
 
@@ -1983,11 +2305,11 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      const exchangeInfo = await getExchangeInfo(trade.symbol, admin.bybit.testnet);
+      const exchangeInfo = await getExchangeInfo(trade.symbol, adminAccount.testnet, exchange);
       await cancelActiveTakeProfitOrders(trade);
       const quantity =
         type === "MARKET"
-          ? await getMaxSellQuantityForAccount(admin.bybit, trade.symbol, exchangeInfo, type)
+          ? await getMaxSellQuantityForAccount({ ...adminAccount, exchange }, trade.symbol, exchangeInfo, type)
           : String(body.quantity || getRemainingTradeQuantity(trade) || "").trim() || undefined;
 
       if (!quantity) {
@@ -2003,6 +2325,7 @@ async function handleApi(req, res, url) {
         type,
         price: price || null,
         quantity,
+        exchange,
         adminExecution: null,
         mirroredExecutions: [],
       };
@@ -2015,23 +2338,30 @@ async function handleApi(req, res, url) {
         price,
         timeInForce: type === "LIMIT" ? "GTC" : undefined,
       };
-      const normalizedExitInput = await normalizeOrderForBybit(admin.bybit, exitInput, exchangeInfo);
+      const normalizedExitInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, exitInput, exchangeInfo);
       exitOrder.quantity = normalizedExitInput.quantity || exitOrder.quantity;
-      await validateNotionalRule(admin.bybit, normalizedExitInput, exchangeInfo);
-      const adminOrder = await placeSpotOrder(admin.bybit, normalizedExitInput);
+      await validateNotionalRule({ ...adminAccount, exchange }, normalizedExitInput, exchangeInfo);
+      const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedExitInput, exchange);
       exitOrder.adminExecution = sanitizeExecution(adminOrder);
 
       for (const child of trade.mirroredExecutions || []) {
         const user = db.users.find((item) => item.id === child.userId);
+        const childAccount = getExchangeAccount(user, normalizeExchange(child.exchange, exchange));
         let childQty = "";
 
-        if (user?.bybit && type === "MARKET") {
+        if (childAccount && type === "MARKET") {
           try {
-            childQty = await getMaxSellQuantityForAccount(user.bybit, trade.symbol, null, type);
+            childQty = await getMaxSellQuantityForAccount(
+              { ...childAccount, exchange: normalizeExchange(child.exchange, exchange) },
+              trade.symbol,
+              null,
+              type
+            );
           } catch (error) {
             exitOrder.mirroredExecutions.push({
               userId: child.userId,
               userName: child.userName,
+              exchange: normalizeExchange(child.exchange, exchange),
               purpose: "MANUAL_SELL",
               status: "SKIPPED",
               error: error.message,
@@ -2047,6 +2377,7 @@ async function handleApi(req, res, url) {
           exitOrder.mirroredExecutions.push({
             userId: child.userId,
             userName: child.userName,
+            exchange: normalizeExchange(child.exchange, exchange),
             purpose: "MANUAL_SELL",
             status: "SKIPPED",
             error: "No filled quantity available for mirrored sell.",
@@ -2065,7 +2396,8 @@ async function handleApi(req, res, url) {
             price,
             timeInForce: type === "LIMIT" ? "GTC" : undefined,
           },
-          "MANUAL_SELL"
+          "MANUAL_SELL",
+          normalizeExchange(child.exchange, exchange)
         );
         exitOrder.mirroredExecutions.push(childExecution);
       }
