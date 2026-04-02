@@ -1325,12 +1325,40 @@ async function autoPlaceTakeProfit(trade, options = {}) {
   return exitOrder;
 }
 
-function sendSessionCookie(res, sessionId) {
-  res.setHeader("Set-Cookie", `sid=${encodeURIComponent(sessionId)}; HttpOnly; Path=/; SameSite=Lax`);
+function isSecureRequest(req) {
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").toLowerCase();
+  return forwardedProto.includes("https");
 }
 
-function clearSessionCookie(res) {
-  res.setHeader("Set-Cookie", "sid=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax");
+function buildSessionCookie(req, value, maxAgeSeconds = 0) {
+  const parts = [
+    `sid=${encodeURIComponent(value)}`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Lax",
+  ];
+
+  if (maxAgeSeconds > 0) {
+    parts.push(`Max-Age=${maxAgeSeconds}`);
+    parts.push(`Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`);
+  } else {
+    parts.push("Max-Age=0");
+    parts.push("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+  }
+
+  if (isSecureRequest(req)) {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function sendSessionCookie(req, res, sessionId) {
+  res.setHeader("Set-Cookie", buildSessionCookie(req, sessionId, 60 * 60 * 24 * 7));
+}
+
+function clearSessionCookie(req, res) {
+  res.setHeader("Set-Cookie", buildSessionCookie(req, "", 0));
 }
 
 async function handleApi(req, res, url) {
@@ -1369,7 +1397,7 @@ async function handleApi(req, res, url) {
     };
     db.users.push(user);
     const session = createSession(user.id);
-    sendSessionCookie(res, session.id);
+    sendSessionCookie(req, res, session.id);
     sendJson(res, 201, { user: sanitizeUser(user) });
     return true;
   }
@@ -1386,14 +1414,14 @@ async function handleApi(req, res, url) {
     }
 
     const session = createSession(user.id);
-    sendSessionCookie(res, session.id);
+    sendSessionCookie(req, res, session.id);
     sendJson(res, 200, { user: sanitizeUser(user) });
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
     clearSession(req);
-    clearSessionCookie(res);
+    clearSessionCookie(req, res);
     sendJson(res, 200, { ok: true });
     return true;
   }

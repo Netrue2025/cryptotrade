@@ -83,6 +83,16 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function requireSessionUser() {
+  const payload = await api("/api/auth/me");
+  if (!payload.user) {
+    throw new Error(
+      "Login succeeded, but the session cookie was not stored or sent back. On Render this usually means the browser blocked the cookie or the deployment URL changed."
+    );
+  }
+  return payload.user;
+}
+
 function beginLoading() {
   state.isLoading = true;
   render();
@@ -860,10 +870,10 @@ function bindAuthForms() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        state.user = result.user;
+        state.user = await requireSessionUser();
         state.activeTab = "home";
         await loadDashboardData();
-        showNotice(`Welcome back, ${result.user.name}`);
+        showNotice(`Welcome back, ${state.user.name}`);
       }).catch((error) => showError(error.message));
     });
   }
@@ -877,10 +887,10 @@ function bindAuthForms() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        state.user = result.user;
+        state.user = await requireSessionUser();
         state.activeTab = "home";
         await loadDashboardData();
-        showNotice(`Welcome back, ${result.user.name}`);
+        showNotice(`Welcome back, ${state.user.name}`);
       }).catch((error) => showError(error.message));
     });
   }
@@ -894,7 +904,7 @@ function bindAuthForms() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        state.user = result.user;
+        state.user = await requireSessionUser();
         state.activeTab = "home";
         await loadDashboardData();
         showNotice("Account created");
