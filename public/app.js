@@ -8,11 +8,17 @@ const WATCH_SYMBOLS = [
   "DOGEUSDT",
   "PEPEUSDT",
 ];
+const WATCHLIST_REFRESH_INTERVAL_MS = 15000;
+const TRADE_REFRESH_INTERVAL_MS = 10000;
+const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
+const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
 
 const state = {
   user: null,
   theme: localStorage.getItem("tradeflow-theme") || "light",
   authTab: "admin-login",
+  showSplash: true,
+  hasShownSplash: false,
   activeTab: "home",
   isLoading: false,
   modalError: null,
@@ -23,14 +29,21 @@ const state = {
   trades: [],
   users: [],
   totalUsdt: 0,
+  totalNgn: 0,
+  usdtNgnRate: 0,
   estimatedPnlValue: 0,
   estimatedPnlPercent: 0,
+  loadingWatchlist: false,
+  loadingAccount: false,
+  loadingTrades: false,
+  loadingUsers: false,
   watchlistSeed: [],
   liveMap: {},
   tradeMarketMap: {},
   showAllBalances: false,
   showAllWatchlist: false,
   expandedTradeIds: [],
+  selectedHistoryTradeIds: [],
   socket: null,
   socketRetry: null,
   socketRefreshTimer: null,
@@ -39,6 +52,9 @@ const state = {
 
 const app = document.getElementById("app");
 const topbarActions = document.getElementById("topbar-actions");
+
+let watchlistRefreshPromise = null;
+let tradeRefreshPromise = null;
 
 function applyTheme() {
   document.body.dataset.theme = state.theme;
@@ -112,6 +128,22 @@ function showNotice(message) {
   }, 2600);
 }
 
+function loadingClass(isLoading) {
+  return isLoading ? " is-section-loading" : "";
+}
+
+function renderSectionLoadingOverlay(title, detail = "Still fetching live data") {
+  return `
+    <div class="section-loading-overlay" aria-hidden="true">
+      <div class="section-loading-card">
+        <div class="section-loading-blur"></div>
+        <p class="section-loading-title">${title}</p>
+        <p class="section-loading-copy">${detail}</p>
+      </div>
+    </div>
+  `;
+}
+
 function formatNumber(value, digits = 8) {
   const num = Number(value || 0);
   if (!Number.isFinite(num)) {
@@ -124,6 +156,13 @@ function formatNumber(value, digits = 8) {
 
 function formatUsdt(value) {
   return `$${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatNaira(value) {
+  return `₦${Number(value || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -160,12 +199,14 @@ function icon(name) {
 function getWatchlist() {
   const base = new Map((state.watchlistSeed || []).map((item) => [item.symbol, item]));
   return WATCH_SYMBOLS.map((symbol) => {
-    const seed = base.get(symbol) || { symbol, price: 0 };
+    const seed = base.get(symbol) || { symbol, price: 0, changePercent: 0, volume24h: 0, turnover24h: 0 };
     const live = state.liveMap[symbol] || {};
     return {
       symbol,
       price: Number(live.price || seed.price || 0),
-      changePercent: Number(live.changePercent || 0),
+      changePercent: Number(live.changePercent ?? seed.changePercent ?? 0),
+      volume24h: Number(live.volume24h ?? seed.volume24h ?? 0),
+      turnover24h: Number(live.turnover24h ?? seed.turnover24h ?? 0),
     };
   });
 }
@@ -210,9 +251,12 @@ function renderWatchlistRows(items) {
         <div class="ticker-row" data-watch-symbol="${item.symbol}">
           <div>
             <strong>${item.symbol}</strong>
-            <p class="muted-copy ${Number(item.changePercent) >= 0 ? "positive" : "negative"}" data-watch-change>${Number(item.changePercent || 0) >= 0 ? "+" : ""}${formatNumber(item.changePercent, 2)}%</p>
+            <p class="muted-copy watch-trend-copy">24h move</p>
           </div>
-          <strong data-watch-price>${formatNumber(item.price, 8)}</strong>
+          <div class="watch-values">
+            <strong data-watch-price>${formatNumber(item.price, 8)}</strong>
+            <p class="watch-change ${Number(item.changePercent) >= 0 ? "positive" : "negative"}" data-watch-change>${Number(item.changePercent || 0) >= 0 ? "+" : ""}${formatNumber(item.changePercent, 2)}%</p>
+          </div>
         </div>
       `
     )
@@ -221,6 +265,61 @@ function renderWatchlistRows(items) {
 
 function getBalanceForAsset(asset) {
   return state.balances.find((item) => item.asset === asset);
+}
+
+function getBaseAssetFromSymbol(symbol) {
+  const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+  const quoteAsset = KNOWN_QUOTE_ASSETS.find(
+    (item) => normalizedSymbol.endsWith(item) && normalizedSymbol.length > item.length
+  );
+  return quoteAsset ? normalizedSymbol.slice(0, -quoteAsset.length) : normalizedSymbol;
+}
+
+function hasActiveOpenOrderForSymbol(symbol) {
+  return (state.openOrders || []).some(
+    (order) => order.symbol === symbol && ACTIVE_API_ORDER_STATUSES.has(String(order.status || "").toUpperCase())
+  );
+}
+
+function hasExchangeBalanceForTrade(trade) {
+  const baseAsset = getBaseAssetFromSymbol(trade.symbol);
+  const balance = getBalanceForAsset(baseAsset);
+  const totalBalance =
+    balance && balance.total !== undefined
+      ? Number(balance.total || 0)
+      : Number(balance?.free || 0) + Number(balance?.locked || 0);
+  return totalBalance > 0;
+}
+
+function isTradeStrictlyOpen(trade) {
+  if (trade.lifecycleStatus !== "OPEN" || getTradeRemainingQuantity(trade) <= 0) {
+    return false;
+  }
+
+  if (!state.user?.bybitConnected) {
+    return true;
+  }
+
+  if (trade.side !== "BUY") {
+    return false;
+  }
+
+  // Strict rule: if the connected Bybit API no longer shows an active order and no remaining
+  // asset balance for the trade, the app must not keep that trade inside Open Trades.
+  return hasActiveOpenOrderForSymbol(trade.symbol) || hasExchangeBalanceForTrade(trade);
+}
+
+function isTradeClearableFromHistory(trade) {
+  return !isTradeStrictlyOpen(trade) && trade.lifecycleStatus !== "PENDING";
+}
+
+function syncHistorySelection() {
+  const tradeIds = new Set(getHistoryTrades().filter(isTradeClearableFromHistory).map((trade) => trade.id));
+  state.selectedHistoryTradeIds = state.selectedHistoryTradeIds.filter((tradeId) => tradeIds.has(tradeId));
+}
+
+function getHistoryTrades() {
+  return [...state.trades];
 }
 
 function getCurrentTradeSummary() {
@@ -355,6 +454,63 @@ function renderActionModal() {
     return "";
   }
 
+  if (state.actionModal.type === "deposit" || state.actionModal.type === "withdraw") {
+    const isDeposit = state.actionModal.type === "deposit";
+    const title = isDeposit ? "Deposit Naira" : "Withdraw Naira";
+    const eyebrow = isDeposit ? "Wallet Funding" : "Wallet Cashout";
+    const buttonLabel = isDeposit ? "Open deposit request" : "Open withdrawal request";
+    const note = isDeposit
+      ? "This form is ready for your Paystack deposit hookup."
+      : "This form is ready for your Paystack withdrawal hookup.";
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card action-modal-card">
+          <button class="modal-close" id="action-modal-close-btn" type="button">x</button>
+          <p class="modal-eyebrow neutral">${eyebrow}</p>
+          <h3>${title}</h3>
+          <p class="modal-text">${note}</p>
+          <div class="stack-form">
+            <label class="stack-label">
+              <span>Amount (NGN)</span>
+              <input id="wallet-amount-input" type="number" min="0" step="0.01" placeholder="Enter amount" />
+            </label>
+            <label class="stack-label">
+              <span>Full name</span>
+              <input id="wallet-name-input" type="text" placeholder="Enter full name" value="${state.user?.name || ""}" />
+            </label>
+            <label class="stack-label">
+              <span>Email</span>
+              <input id="wallet-email-input" type="email" placeholder="Enter email" value="${state.user?.email || ""}" />
+            </label>
+            ${
+              isDeposit
+                ? `
+                  <label class="stack-label">
+                    <span>Reference note</span>
+                    <input id="wallet-note-input" type="text" placeholder="Optional note for this deposit" />
+                  </label>
+                `
+                : `
+                  <label class="stack-label">
+                    <span>Bank name</span>
+                    <input id="wallet-bank-input" type="text" placeholder="Enter bank name" />
+                  </label>
+                  <label class="stack-label">
+                    <span>Account number</span>
+                    <input id="wallet-account-input" type="text" inputmode="numeric" placeholder="Enter account number" />
+                  </label>
+                `
+            }
+          </div>
+          <div class="modal-actions">
+            <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
+            <button class="button-primary shimmer-button" id="wallet-submit-btn" data-wallet-mode="${state.actionModal.type}" type="button">${buttonLabel}</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   const trade = state.trades.find((item) => item.id === state.actionModal.tradeId);
   if (!trade) {
     return "";
@@ -446,7 +602,7 @@ function renderActionModal() {
             <strong id="tp-modal-preview" class="${pnlPercent >= 0 ? "positive" : "negative"}">${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
             <p id="tp-modal-preview-usdt" class="muted-copy ${pnlValue >= 0 ? "positive" : "negative"}">${pnlValue >= 0 ? "+" : ""}${formatUsdtUnit(Math.abs(pnlValue))}</p>
           </div>
-          <p class="modal-text">This updates the stored TP target and replaces the active Binance TP order with the new value when the trade is open.</p>
+          <p class="modal-text">This updates the stored TP target and replaces the active Bybit TP order with the new value when the trade is open.</p>
           <div class="modal-actions">
             <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
             <button class="button-primary shimmer-button" id="confirm-tp-btn" data-trade-id="${trade.id}" type="button">Save TP</button>
@@ -477,6 +633,23 @@ function renderLoader() {
   `;
 }
 
+function startSplashSequence(force = false) {
+  clearTimeout(startSplashSequence.timeoutId);
+  if (state.hasShownSplash && !force) {
+    state.showSplash = false;
+    render();
+    return;
+  }
+
+  state.showSplash = true;
+  render();
+  startSplashSequence.timeoutId = setTimeout(() => {
+    state.showSplash = false;
+    state.hasShownSplash = true;
+    render();
+  }, 2600);
+}
+
 function renderAuthPane() {
   if (state.authTab === "register") {
     return `
@@ -499,39 +672,61 @@ function renderAuthPane() {
   `;
 }
 
-function renderLanding() {
-  app.innerHTML = `
-    <section class="landing-shell">
-      <section class="mobile-card intro-card">
-        <p class="eyebrow">Crypto Spot MVP</p>
-        <h2>Trade like a real mobile app</h2>
-        <p class="muted-copy">
-          Admin trades from one clean ticket, users connect Binance, and mirrored spot execution stays behind the scenes.
-        </p>
-        <div class="chip-row">
-          <span class="soft-chip">Binance connected</span>
-          <span class="soft-chip">Spot only</span>
-          <span class="soft-chip">Mirrored users</span>
-        </div>
-      </section>
-      <section class="mobile-card auth-card">
-        <div class="auth-switch">
-          <button class="auth-toggle ${state.authTab === "admin-login" ? "active" : ""}" data-auth-tab="admin-login">Admin</button>
-          <button class="auth-toggle ${state.authTab === "user-login" ? "active" : ""}" data-auth-tab="user-login">User</button>
-          <button class="auth-toggle ${state.authTab === "register" ? "active" : ""}" data-auth-tab="register">Register</button>
-        </div>
-        ${renderAuthPane()}
-      </section>
-      <section class="mobile-card watch-card">
-        <div class="section-head">
+function renderSplashScreen() {
+  return `
+    <section class="splash-screen">
+      <div class="splash-aura splash-aura-one"></div>
+      <div class="splash-aura splash-aura-two"></div>
+      <div class="splash-logo-shell">
+        <img class="splash-logo" src="/netruefx-logo.png" alt="Netrue FX logo" />
+      </div>
+      <div class="splash-copy">
+        <p class="eyebrow">Netrue FX</p>
+        <h2>Smart trading starts here</h2>
+        <p class="muted-copy">Loading your secure trading gateway...</p>
+      </div>
+    </section>
+  `;
+}
+
+function renderAuthLanding() {
+  const isRegister = state.authTab === "register";
+  return `
+    <section class="auth-landing">
+      <section class="auth-shell-card">
+        <div class="auth-brand-block">
+          <img class="auth-brand-logo" src="/netruefx-logo.png" alt="Netrue FX logo" />
           <div>
-            <h3>Live watchlist</h3>
-            <p class="muted-copy">Streaming from Binance.</p>
+            <p class="eyebrow">Netrue FX</p>
+            <h2>${isRegister ? "Create your user account" : "Welcome back"}</h2>
+            <p class="muted-copy">${isRegister ? "Register once, then connect and trade with confidence." : "Sign in as admin or user to continue."}</p>
           </div>
         </div>
-        <div class="compact-list" data-watchlist-host="landing">${renderWatchlistRows(getDisplayedWatchlist())}</div>
+        <div class="auth-mode-row">
+          <button class="auth-toggle ${!isRegister ? "active" : ""}" data-auth-mode="login" type="button">Login</button>
+          <button class="auth-toggle ${isRegister ? "active" : ""}" data-auth-mode="register" type="button">Register</button>
+        </div>
+        ${
+          !isRegister
+            ? `
+              <div class="auth-role-row">
+                <button class="auth-toggle ${state.authTab === "admin-login" ? "active" : ""}" data-auth-tab="admin-login" type="button">Admin</button>
+                <button class="auth-toggle ${state.authTab === "user-login" ? "active" : ""}" data-auth-tab="user-login" type="button">User</button>
+              </div>
+            `
+            : `
+              <p class="auth-role-note">New registrations create a user account.</p>
+            `
+        }
+        ${renderAuthPane()}
       </section>
     </section>
+  `;
+}
+
+function renderLanding() {
+  app.innerHTML = `
+    ${state.showSplash ? renderSplashScreen() : renderAuthLanding()}
     ${renderNotice()}
     ${renderErrorModal()}
     ${renderActionModal()}
@@ -545,11 +740,33 @@ function renderLanding() {
     });
   });
 
+  document.querySelectorAll("[data-auth-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.authTab = button.dataset.authMode === "register" ? "register" : "admin-login";
+      render();
+    });
+  });
+
   bindAuthForms();
   bindModalActions();
 }
 
 function renderTopbarActions() {
+  const topbar = document.querySelector(".topbar");
+  document.body.dataset.appShell = state.user ? "dashboard" : "guest";
+
+  if (!state.user) {
+    if (topbar) {
+      topbar.style.display = "none";
+    }
+    topbarActions.innerHTML = "";
+    return;
+  }
+
+  if (topbar) {
+    topbar.style.display = "";
+  }
+
   topbarActions.innerHTML = `
     <div class="brand-mark">
       <div class="brand-icon star-icon">&#9733;</div>
@@ -753,14 +970,15 @@ async function refreshTradeStatusData() {
     const payload = await api("/api/trades");
     const nextTrades = payload.trades || [];
     let nextOpenOrders = [];
-    if (state.user.binanceConnected) {
-      const openOrdersPayload = await api("/api/binance/open-orders");
+    if (state.user.bybitConnected) {
+      const openOrdersPayload = await api("/api/bybit/open-orders");
       nextOpenOrders = openOrdersPayload.openOrders || [];
     }
     const tradesChanged = JSON.stringify(nextTrades) !== JSON.stringify(state.trades);
     const openOrdersChanged = JSON.stringify(nextOpenOrders) !== JSON.stringify(state.openOrders);
     state.trades = nextTrades;
     state.openOrders = nextOpenOrders;
+    syncHistorySelection();
     const activeOpenTradeIds = new Set(nextTrades.filter((trade) => trade.lifecycleStatus === "OPEN").map((trade) => trade.id));
     state.expandedTradeIds = state.expandedTradeIds.filter((id) => activeOpenTradeIds.has(id));
     if (tradesChanged || openOrdersChanged) {
@@ -784,6 +1002,7 @@ function refreshTradeSectionsDom() {
 
   bindTradeActionButtons();
   bindTradeDisclosureToggles();
+  bindHistoryActions();
   refreshTradeDom();
 }
 
@@ -815,42 +1034,14 @@ async function refreshTradeMarketData() {
 
 function connectWatchSocket() {
   disconnectWatchSocket();
-  const streams = WATCH_SYMBOLS.map((symbol) => `${symbol.toLowerCase()}@ticker`).join("/");
-  const socket = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
-  state.socket = socket;
-  state.socketRefreshTimer = setInterval(refreshWatchlistDom, 5000);
-
-  socket.onmessage = (event) => {
-    const payload = JSON.parse(event.data);
-    const data = payload.data || {};
-    if (!data.s) {
-      return;
-    }
-    state.liveMap[data.s] = {
-      price: Number(data.c || 0),
-      changePercent: Number(data.P || 0),
-    };
-  };
-
-  socket.onclose = () => {
-    state.socket = null;
-    clearTimeout(state.socketRetry);
-    state.socketRetry = setTimeout(() => {
-      connectWatchSocket();
-    }, 5000);
-  };
-
-  socket.onerror = () => {
-    socket.close();
-  };
+  hydrateWatchlistFromSeed();
+  refreshWatchlistDom();
+  state.socketRefreshTimer = setInterval(() => {
+    void refreshWatchlistFeed();
+  }, WATCHLIST_REFRESH_INTERVAL_MS);
 }
 
 function disconnectWatchSocket() {
-  if (state.socket) {
-    state.socket.close();
-    state.socket = null;
-  }
-  clearTimeout(state.socketRetry);
   clearInterval(state.socketRefreshTimer);
   state.socketRefreshTimer = null;
 }
@@ -858,9 +1049,8 @@ function disconnectWatchSocket() {
 function startTradeRefreshTimer() {
   clearInterval(state.tradeRefreshTimer);
   state.tradeRefreshTimer = setInterval(() => {
-    refreshTradeMarketData();
-    refreshTradeStatusData();
-  }, 5000);
+    void refreshDashboardLiveData();
+  }, TRADE_REFRESH_INTERVAL_MS);
 }
 
 function stopTradeRefreshTimer() {
@@ -877,46 +1067,205 @@ async function loadWatchlistSeed() {
   }
 }
 
-async function loadDashboardData() {
-  await loadWatchlistSeed();
+function hydrateWatchlistFromSeed() {
+  state.liveMap = Object.fromEntries(
+    (state.watchlistSeed || []).map((item) => [
+      item.symbol,
+      {
+        price: Number(item.price || 0),
+        changePercent: Number(item.changePercent || 0),
+        volume24h: Number(item.volume24h || 0),
+        turnover24h: Number(item.turnover24h || 0),
+      },
+    ])
+  );
+}
 
+async function refreshWatchlistFeed() {
+  if (watchlistRefreshPromise) {
+    return watchlistRefreshPromise;
+  }
+
+  if (!state.watchlistSeed.length) {
+    state.loadingWatchlist = true;
+    render();
+  }
+
+  watchlistRefreshPromise = loadWatchlistSeed()
+    .then(() => {
+      hydrateWatchlistFromSeed();
+      refreshWatchlistDom();
+    })
+    .catch(() => {
+      state.watchlistSeed = [];
+      hydrateWatchlistFromSeed();
+      refreshWatchlistDom();
+    })
+    .finally(() => {
+      state.loadingWatchlist = false;
+      render();
+      watchlistRefreshPromise = null;
+    });
+
+  return watchlistRefreshPromise;
+}
+
+async function refreshDashboardLiveData() {
+  if (tradeRefreshPromise) {
+    return tradeRefreshPromise;
+  }
+
+  tradeRefreshPromise = Promise.allSettled([
+    refreshTradeMarketData(),
+    refreshTradeStatusData(),
+  ]).finally(() => {
+    tradeRefreshPromise = null;
+  });
+
+  return tradeRefreshPromise;
+}
+
+function applyAccountSnapshot(account) {
+  if (account) {
+    state.balances = account.balances || [];
+    state.openOrders = account.openOrders || [];
+    state.totalUsdt = Number(account.totalUsdt || 0);
+    state.totalNgn = Number(account.totalNgn || 0);
+    state.usdtNgnRate = Number(account.usdtNgnRate || 0);
+    state.estimatedPnlValue = Number(account.estimatedPnlValue || 0);
+    state.estimatedPnlPercent = Number(account.estimatedPnlPercent || 0);
+    return;
+  }
+
+  state.balances = [];
+  state.openOrders = [];
+  state.totalUsdt = 0;
+  state.totalNgn = 0;
+  state.usdtNgnRate = 0;
+  state.estimatedPnlValue = 0;
+  state.estimatedPnlPercent = 0;
+}
+
+async function loadDashboardData() {
   if (!state.user) {
     disconnectWatchSocket();
     stopTradeRefreshTimer();
+    state.loadingWatchlist = false;
     render();
     return;
   }
 
-  connectWatchSocket();
-
-  if (state.user.binanceConnected) {
-    const account = await api("/api/binance/account");
-    state.balances = account.balances || [];
-    state.openOrders = account.openOrders || [];
-    state.totalUsdt = Number(account.totalUsdt || 0);
-    state.estimatedPnlValue = Number(account.estimatedPnlValue || 0);
-    state.estimatedPnlPercent = Number(account.estimatedPnlPercent || 0);
-  } else {
-    state.balances = [];
-    state.openOrders = [];
-    state.totalUsdt = 0;
-    state.estimatedPnlValue = 0;
-    state.estimatedPnlPercent = 0;
-  }
-
-  const tradesPayload = await api("/api/trades");
-  state.trades = tradesPayload.trades || [];
-  await refreshTradeMarketData();
-  startTradeRefreshTimer();
-
-  if (state.user.role === "admin") {
-    const usersPayload = await api("/api/admin/users");
-    state.users = usersPayload.users || [];
-  } else {
-    state.users = [];
-  }
-
+  state.loadingWatchlist = !state.watchlistSeed.length;
+  state.loadingAccount = !!(state.user.bybitConnected && !state.balances.length);
+  state.loadingTrades = !state.trades.length;
+  state.loadingUsers = !!(state.user.role === "admin" && !state.users.length);
   render();
+
+  const watchlistPromise = refreshWatchlistFeed()
+    .then(() => {
+      connectWatchSocket();
+      render();
+    })
+    .catch(() => {
+      state.watchlistSeed = [];
+      hydrateWatchlistFromSeed();
+      connectWatchSocket();
+      render();
+    });
+
+  applyAccountSnapshot(null);
+  const accountPromise = state.user.bybitConnected
+    ? api("/api/bybit/account")
+        .then((account) => {
+          applyAccountSnapshot(account);
+          state.loadingAccount = false;
+          render();
+        })
+        .catch(() => {
+          applyAccountSnapshot(null);
+          state.loadingAccount = false;
+          render();
+        })
+    : Promise.resolve().then(() => {
+        state.loadingAccount = false;
+      });
+  const tradesPromise = api("/api/trades");
+  const usersPromise = state.user.role === "admin"
+    ? api("/api/admin/users")
+    : Promise.resolve({ users: [] });
+
+  const [tradesPayload, usersPayload] = await Promise.all([
+    tradesPromise,
+    usersPromise,
+  ]);
+
+  state.trades = tradesPayload.trades || [];
+  state.users = usersPayload.users || [];
+  state.loadingTrades = false;
+  state.loadingUsers = false;
+  syncHistorySelection();
+  render();
+  void refreshTradeMarketData();
+  startTradeRefreshTimer();
+  void accountPromise;
+  void watchlistPromise;
+}
+
+function bindHistoryActions() {
+  document.querySelectorAll("[data-history-trade-id]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const tradeId = input.dataset.historyTradeId;
+      if (!tradeId) {
+        return;
+      }
+
+      if (input.checked) {
+        if (!state.selectedHistoryTradeIds.includes(tradeId)) {
+          state.selectedHistoryTradeIds = [...state.selectedHistoryTradeIds, tradeId];
+        }
+      } else {
+        state.selectedHistoryTradeIds = state.selectedHistoryTradeIds.filter((id) => id !== tradeId);
+      }
+      render();
+    });
+  });
+
+  const selectAllButton = document.getElementById("history-select-all-btn");
+  if (selectAllButton) {
+    selectAllButton.addEventListener("click", () => {
+      const trades = getHistoryTrades().filter(isTradeClearableFromHistory);
+      const allTradeIds = trades.map((trade) => trade.id);
+      const shouldClearSelection = allTradeIds.length && state.selectedHistoryTradeIds.length === allTradeIds.length;
+      state.selectedHistoryTradeIds = shouldClearSelection ? [] : allTradeIds;
+      render();
+    });
+  }
+
+  const clearButton = document.getElementById("history-clear-btn");
+  if (clearButton) {
+    clearButton.addEventListener("click", async () => {
+      const tradeIds = [...state.selectedHistoryTradeIds];
+      if (!tradeIds.length) {
+        showError("Select at least one trade to clear.");
+        return;
+      }
+
+      const label = tradeIds.length === 1 ? "this trade history item" : `these ${tradeIds.length} trade history items`;
+      if (!window.confirm(`Clear ${label}? This removes them from the saved app history.`)) {
+        return;
+      }
+
+      await withLoading(async () => {
+        const result = await api("/api/trades/history/clear", {
+          method: "POST",
+          body: JSON.stringify({ tradeIds }),
+        });
+        state.selectedHistoryTradeIds = [];
+        await loadDashboardData();
+        showNotice(`${result.clearedCount || tradeIds.length} history item${(result.clearedCount || tradeIds.length) === 1 ? "" : "s"} cleared`);
+      }).catch((error) => showError(error.message));
+    });
+  }
 }
 
 function renderBottomNav() {
@@ -944,40 +1293,49 @@ function renderBottomNav() {
 }
 
 function renderSummaryCard() {
-  const netrueBalance = getNetrueBalanceValue();
-  const dailyReturn = netrueBalance * 0.01;
+  const nairaBalance = Number(state.totalNgn || 0);
+  const nairaRate = Number(state.usdtNgnRate || 0);
+  const accountLoading = state.loadingAccount;
   const chips =
     state.user?.role === "admin"
       ? [
           "Spot only",
           `Mirrored users ${state.users.filter((user) => user.mirrorEnabled).length}`,
-          `Connected users ${state.users.filter((user) => user.binanceConnected).length}`,
+          `Connected users ${state.users.filter((user) => user.bybitConnected).length}`,
         ]
       : [
           "Spot only",
           state.user?.mirrorEnabled ? "Mirror enabled" : "Mirror off",
-          state.user?.binanceConnected ? "Binance connected" : "Setup needed",
+          state.user?.bybitConnected ? "Bybit connected" : "Setup needed",
         ];
 
   return `
       <section class="balance-carousel">
         <article class="summary-hero balance-slide">
+          ${accountLoading ? renderSectionLoadingOverlay("Loading balances", "Syncing your Bybit balance cards") : ""}
           <div>
             <p class="eyebrow light">Spot Balance</p>
             <h2>${formatUsdt(state.totalUsdt)}</h2>
-            <p class="muted-bright">Live estimate based on Binance spot balances.</p>
+            <p class="muted-bright">Live estimate based on Bybit spot balances.</p>
             <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h est. PnL ${state.estimatedPnlValue >= 0 ? "+" : ""}${formatUsdt(state.estimatedPnlValue)} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
           </div>
           <div class="hero-chip-row">
             ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
           </div>
+          <div class="carousel-hint" aria-hidden="true">
+            <span class="carousel-bar active"></span>
+            <span class="carousel-bar"></span>
+          </div>
         </article>
         <article class="summary-hero balance-slide netrue-card">
+          ${accountLoading ? renderSectionLoadingOverlay("Loading NGN view", "Pulling the latest fiat conversion") : ""}
           <div>
-            <p class="eyebrow light">Netrue Balance</p>
-            <h2>${formatUsdt(netrueBalance)}</h2>
-            <p class="muted-bright">Daily return ${formatUsdt(dailyReturn)} • 1.00%</p>
-            <p class="muted-bright">Internal wallet card for deposits and withdrawals.</p>
+            <p class="eyebrow light">Naira Balance</p>
+            <h2>${nairaBalance > 0 ? formatNaira(nairaBalance) : "--"}</h2>
+            <p class="muted-bright">
+              ${nairaRate > 0 ? `Bybit fiat rate 1 USDT = ${formatNaira(nairaRate)}` : "Bybit fiat rate unavailable right now."}
+            </p>
+            <p class="muted-bright">Live portfolio value converted from your Bybit spot balance.</p>
           </div>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">Deposit</button>
@@ -985,7 +1343,7 @@ function renderSummaryCard() {
           </div>
         </article>
       </section>
-    `;
+  `;
 }
 
 function renderTradeTicket() {
@@ -1053,10 +1411,11 @@ function renderTradeTicket() {
 function renderBalancesSection() {
   const balances = getDisplayedBalances();
   return `
-    <section class="mobile-card">
+    <section class="mobile-card${loadingClass(state.loadingAccount)}">
+      ${state.loadingAccount ? renderSectionLoadingOverlay("Loading assets", "Pulling your connected Bybit balances") : ""}
       <div class="section-head">
         <div>
-          <h3>Connected Binance Balances</h3>
+          <h3>Connected Bybit Balances</h3>
           <p class="muted-copy">Top coins first, with live USDT value.</p>
         </div>
         <button id="toggle-balances-btn" class="text-link" type="button">${state.showAllBalances ? "See less" : "See more"}</button>
@@ -1072,12 +1431,15 @@ function renderBalancesSection() {
                 </div>
                 <div class="asset-values">
                   <strong>${formatUsdt(balance.usdtValue)}</strong>
-                  <p class="muted-copy">${formatNumber(balance.free)} free</p>
+                  <p class="muted-copy ${Number(balance.changePercent || 0) >= 0 ? "positive" : "negative"}">
+                    ${Number(balance.changePercent || 0) >= 0 ? "+" : ""}${formatNumber(balance.changePercent, 2)}%
+                    (${Number(balance.estimatedPnlValue || 0) >= 0 ? "+" : ""}${formatUsdt(balance.estimatedPnlValue)})
+                  </p>
                 </div>
               </div>
             `
           )
-          .join("") || `<p class="muted-copy">Connect Binance in settings to load balances.</p>`}
+          .join("") || `<p class="muted-copy">Connect Bybit in settings to load balances.</p>`}
       </div>
     </section>
   `;
@@ -1086,7 +1448,8 @@ function renderBalancesSection() {
 function renderWatchlistSection() {
   const watchlist = getDisplayedWatchlist();
   return `
-    <section class="mobile-card">
+    <section class="mobile-card${loadingClass(state.loadingWatchlist)}">
+      ${state.loadingWatchlist ? renderSectionLoadingOverlay("Loading watchlist", "Refreshing live market movers") : ""}
       <div class="section-head">
         <div>
           <h3>Live Crypto Watchlist</h3>
@@ -1100,32 +1463,81 @@ function renderWatchlistSection() {
 }
 
 function getAiRecommendations() {
-  const movers = [...getWatchlist()].sort((a, b) => b.changePercent - a.changePercent);
-  const topPump = movers[0] || null;
-  const topDip = movers[movers.length - 1] || null;
-  return { topPump, topDip };
+  const list = [...getWatchlist()].filter((item) => item.price > 0);
+  if (!list.length) {
+    return { bestBuy: null, bestSell: null };
+  }
+
+  const maxTurnover = Math.max(...list.map((item) => Number(item.turnover24h || 0)), 1);
+  const scored = list.map((item) => {
+    const turnoverScore = Number(item.turnover24h || 0) / maxTurnover;
+    const momentumScore = Number(item.changePercent || 0);
+    const buyScore = momentumScore * 0.7 + turnoverScore * 100 * 0.3;
+    const sellScore = Math.max(-momentumScore, 0) * 0.7 + turnoverScore * 100 * 0.3;
+    return {
+      ...item,
+      turnoverScore,
+      buyScore,
+      sellScore,
+    };
+  });
+
+  const bestBuy = [...scored].sort((a, b) => b.buyScore - a.buyScore)[0] || null;
+  const bestSell = [...scored].sort((a, b) => b.sellScore - a.sellScore)[0] || null;
+  return { bestBuy, bestSell };
+}
+
+function buildAiTradingHint(coin, mode) {
+  if (!coin) {
+    return "Waiting for market data.";
+  }
+
+  const trend = Number(coin.changePercent || 0);
+  const turnover = Number(coin.turnover24h || 0);
+  const turnoverText = turnover > 0 ? `${formatUsdt(turnover)} 24h turnover` : "light 24h turnover";
+
+  if (mode === "buy") {
+    if (trend >= 8) {
+      return `AI read: strong upside pressure with ${turnoverText}. Best used for momentum entries after a pullback, not a reckless chase.`;
+    }
+    if (trend >= 0) {
+      return `AI read: buyers still control this tape and ${turnoverText} supports continuation. Watch for a higher-low entry.`;
+    }
+    return `AI read: volume is active, but price is still soft. Wait for strength to return before treating this as a clean buy.`;
+  }
+
+  if (trend <= -8) {
+    return `AI read: heavy downside momentum with ${turnoverText}. Best sell candidate while trend stays weak and bounces fail.`;
+  }
+  if (trend < 0) {
+    return `AI read: sellers still have the edge and ${turnoverText} confirms pressure. Consider exits on weak rebounds.`;
+  }
+  return `AI read: volume is high but downside is fading. This sell setup weakens if buyers keep reclaiming price.`;
 }
 
 function renderAiSignalCard() {
-  const { topPump, topDip } = getAiRecommendations();
+  const { bestBuy, bestSell } = getAiRecommendations();
   return `
-    <section class="mobile-card ai-card">
+    <section class="mobile-card ai-card${loadingClass(state.loadingWatchlist)}">
+      ${state.loadingWatchlist ? renderSectionLoadingOverlay("Loading AI signals", "Reading market direction from live data") : ""}
       <div class="section-head">
         <div>
           <h3>AI Recommend Coin</h3>
-          <p class="muted-copy">Quick read on the strongest pump and dip from live movers.</p>
+          <p class="muted-copy">Dynamic read from top gainers, top losers, and 24h trading turnover.</p>
         </div>
       </div>
       <div class="ai-grid">
         <div class="ai-pick">
-          <p class="eyebrow">Top Pump</p>
-          <h4>${topPump ? topPump.symbol : "--"}</h4>
-          <p class="muted-copy">${topPump ? `${formatNumber(topPump.changePercent, 2)}% momentum. Watch for breakout continuation.` : "Waiting for market data."}</p>
+          <p class="eyebrow">Best Buy</p>
+          <h4>${bestBuy ? bestBuy.symbol : "--"}</h4>
+          <p class="muted-copy">${bestBuy ? `${formatNumber(bestBuy.changePercent, 2)}% move with ${formatUsdt(bestBuy.turnover24h)} turnover.` : "Waiting for market data."}</p>
+          <p class="muted-copy">${buildAiTradingHint(bestBuy, "buy")}</p>
         </div>
         <div class="ai-pick dip">
-          <p class="eyebrow">Top Dip</p>
-          <h4>${topDip ? topDip.symbol : "--"}</h4>
-          <p class="muted-copy">${topDip ? `${formatNumber(topDip.changePercent, 2)}% retrace. Watch for bounce setup or avoid weak structure.` : "Waiting for market data."}</p>
+          <p class="eyebrow">Best Sell</p>
+          <h4>${bestSell ? bestSell.symbol : "--"}</h4>
+          <p class="muted-copy">${bestSell ? `${formatNumber(bestSell.changePercent, 2)}% move with ${formatUsdt(bestSell.turnover24h)} turnover.` : "Waiting for market data."}</p>
+          <p class="muted-copy">${buildAiTradingHint(bestSell, "sell")}</p>
         </div>
       </div>
     </section>
@@ -1133,11 +1545,12 @@ function renderAiSignalCard() {
 }
 
 function renderOpenOrdersSection() {
-    const openTrades = state.trades.filter((trade) => trade.lifecycleStatus === "OPEN").slice(0, 5);
+    const openTrades = state.trades.filter(isTradeStrictlyOpen).slice(0, 5);
     const openOrders = (state.openOrders || []).slice(0, 5);
     const canManageTrades = state.user?.role === "admin";
     return `
-      <section class="mobile-card split-card">
+      <section class="mobile-card split-card${loadingClass(state.loadingTrades)}">
+        ${state.loadingTrades ? renderSectionLoadingOverlay("Loading trades", "Checking your open trades and orders") : ""}
         <div>
         <div class="section-head">
           <div>
@@ -1214,7 +1627,7 @@ function renderOpenOrdersSection() {
         <div class="section-head">
           <div>
             <h3>Open Orders</h3>
-            <p class="muted-copy">Live Binance orders that are still waiting to fill.</p>
+            <p class="muted-copy">Live Bybit orders that are still waiting to fill.</p>
           </div>
         </div>
         <div class="compact-list">
@@ -1256,16 +1669,17 @@ function renderSettingsPane() {
           <button class="theme-btn ${state.theme === "dark" ? "active" : ""}" data-theme-mode="dark" type="button">Dark</button>
         </div>
       </section>
-      <section class="mobile-card">
+      <section class="mobile-card${loadingClass(state.loadingUsers)}">
+        ${state.loadingUsers ? renderSectionLoadingOverlay("Loading users", "Pulling linked account details") : ""}
         <div class="section-head">
           <div>
-            <h3>Binance Connection</h3>
+            <h3>Bybit Connection</h3>
           <p class="muted-copy">Hidden under settings to keep the dashboard clean.</p>
         </div>
       </div>
-      <form id="binance-connect-form" class="stack-form">
-        <label>API key <input name="apiKey" placeholder="Paste Binance API key" required /></label>
-        <label>API secret <input name="apiSecret" type="password" placeholder="Paste Binance API secret" required /></label>
+      <form id="bybit-connect-form" class="stack-form">
+        <label>API key <input name="apiKey" placeholder="Paste Bybit API key" required /></label>
+        <label>API secret <input name="apiSecret" type="password" placeholder="Paste Bybit API secret" required /></label>
         <label>
           Environment
           <select name="testnet">
@@ -1273,7 +1687,7 @@ function renderSettingsPane() {
             <option value="true">Testnet</option>
           </select>
         </label>
-        <button class="button-primary shimmer-button" type="submit">Connect Binance</button>
+        <button class="button-primary shimmer-button" type="submit">Connect Bybit</button>
       </form>
         ${
           state.user.role === "user"
@@ -1311,7 +1725,7 @@ function renderSettingsPane() {
                           <p class="muted-copy">${user.email}</p>
                         </div>
                         <div class="asset-values">
-                          <strong>${user.binanceConnected ? "Connected" : "Not linked"}</strong>
+                          <strong>${user.bybitConnected ? "Connected" : "Not linked"}</strong>
                           <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"}</p>
                         </div>
                       </div>
@@ -1325,7 +1739,7 @@ function renderSettingsPane() {
                     <p class="muted-copy">${state.user.email}</p>
                   </div>
                   <div class="asset-values">
-                    <strong>${state.user.binanceConnected ? "Binance linked" : "No Binance linked"}</strong>
+                    <strong>${state.user.bybitConnected ? "Bybit linked" : "No Bybit linked"}</strong>
                     <p class="muted-copy">${state.user.mirrorEnabled ? "Mirroring enabled" : "Mirroring disabled"}</p>
                   </div>
                 </div>
@@ -1358,13 +1772,27 @@ function renderSignalsPane() {
 }
 
 function renderHistoryContent() {
-  const trades = [...state.trades];
+  const trades = getHistoryTrades();
+  const canClearHistory = state.user?.role === "admin";
   return `
     <div class="card-list">
       ${trades
-        .map(
-          (trade) => `
-            <div class="asset-card">
+        .map((trade) => {
+          const canSelectTrade = canClearHistory && isTradeClearableFromHistory(trade);
+          return `
+            <div class="asset-card history-row">
+              ${
+                canClearHistory
+                  ? `
+                    <label class="history-checkbox">
+                      <input type="checkbox" data-history-trade-id="${trade.id}" ${
+                        state.selectedHistoryTradeIds.includes(trade.id) ? "checked" : ""
+                      } ${canSelectTrade ? "" : "disabled"} />
+                      <span></span>
+                    </label>
+                  `
+                  : ""
+              }
               <div>
                 <strong>${trade.symbol}</strong>
                 <p class="muted-copy">${trade.side} ${trade.type} | ${new Date(trade.createdAt).toLocaleString()}</p>
@@ -1374,22 +1802,51 @@ function renderHistoryContent() {
                 <p class="muted-copy">${trade.price || "Market"}</p>
               </div>
             </div>
-          `
-        )
+          `;
+        })
         .join("") || `<p class="muted-copy">No trade history yet.</p>`}
     </div>
   `;
 }
 
 function renderHistoryPane() {
+  const trades = getHistoryTrades();
+  const clearableTrades = trades.filter(isTradeClearableFromHistory);
+  const canClearHistory = state.user?.role === "admin";
+  const selectedCount = state.selectedHistoryTradeIds.length;
+  const allSelected = !!clearableTrades.length && selectedCount === clearableTrades.length;
   return `
-    <section class="mobile-card">
+    <section class="mobile-card${loadingClass(state.loadingTrades)}">
+      ${state.loadingTrades ? renderSectionLoadingOverlay("Loading history", "Syncing your saved trade timeline") : ""}
       <div class="section-head">
         <div>
           <h3>Trade History</h3>
           <p class="muted-copy">Recent spot trades and execution state.</p>
         </div>
       </div>
+      ${
+        canClearHistory
+          ? `
+            <div class="history-toolbar">
+              <p class="muted-copy">${
+                selectedCount
+                  ? `${selectedCount} selected for clearing.`
+                  : clearableTrades.length
+                    ? "Select saved trades to clear them."
+                    : "Open and pending trades stay protected here."
+              }</p>
+              <div class="history-toolbar-actions">
+                <button id="history-select-all-btn" class="text-link" type="button">${
+                  allSelected ? "Clear selection" : "Select all"
+                }</button>
+                <button id="history-clear-btn" class="mini-action danger" type="button" ${
+                  selectedCount ? "" : "disabled"
+                }>Clear selected</button>
+              </div>
+            </div>
+          `
+          : ""
+      }
       <div data-history-host>${renderHistoryContent()}</div>
     </section>
   `;
@@ -1444,13 +1901,15 @@ function renderDashboardShell() {
 }
 
 function bindDashboardActions() {
-  const connectForm = document.getElementById("binance-connect-form");
+  bindHistoryActions();
+
+  const connectForm = document.getElementById("bybit-connect-form");
   if (connectForm) {
     connectForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       await withLoading(async () => {
         const data = Object.fromEntries(new FormData(connectForm).entries());
-        const result = await api("/api/binance/connect", {
+        const result = await api("/api/bybit/connect", {
           method: "POST",
           body: JSON.stringify({
             apiKey: data.apiKey,
@@ -1460,7 +1919,7 @@ function bindDashboardActions() {
         });
         state.user = result.user;
         await loadDashboardData();
-        showNotice("Binance connected successfully");
+        showNotice("Bybit connected successfully");
       }).catch((error) => showError(error.message));
     });
   }
@@ -1500,12 +1959,43 @@ function bindDashboardActions() {
 
   const depositButton = document.getElementById("netrue-deposit-btn");
   if (depositButton) {
-    depositButton.addEventListener("click", () => showNotice("Deposit flow is the next wallet upgrade"));
+    depositButton.addEventListener("click", () => showActionModal({ type: "deposit" }));
   }
 
   const withdrawButton = document.getElementById("netrue-withdraw-btn");
   if (withdrawButton) {
-    withdrawButton.addEventListener("click", () => showNotice("Withdraw flow is the next wallet upgrade"));
+    withdrawButton.addEventListener("click", () => showActionModal({ type: "withdraw" }));
+  }
+
+  const walletSubmitButton = document.getElementById("wallet-submit-btn");
+  if (walletSubmitButton) {
+    walletSubmitButton.addEventListener("click", () => {
+      const mode = walletSubmitButton.dataset.walletMode || "deposit";
+      const amount = document.getElementById("wallet-amount-input")?.value?.trim();
+      const name = document.getElementById("wallet-name-input")?.value?.trim();
+      const email = document.getElementById("wallet-email-input")?.value?.trim();
+
+      if (!amount || Number(amount) <= 0) {
+        showError("Enter a valid NGN amount.");
+        return;
+      }
+      if (!name || !email) {
+        showError("Name and email are required.");
+        return;
+      }
+
+      if (mode === "withdraw") {
+        const bank = document.getElementById("wallet-bank-input")?.value?.trim();
+        const account = document.getElementById("wallet-account-input")?.value?.trim();
+        if (!bank || !account) {
+          showError("Bank name and account number are required for withdrawals.");
+          return;
+        }
+      }
+
+      clearActionModal();
+      showNotice(`${mode === "deposit" ? "Deposit" : "Withdrawal"} form captured and ready for Paystack hookup`);
+    });
   }
 
   document.querySelectorAll("[data-theme-mode]").forEach((button) => {
@@ -1531,10 +2021,14 @@ function bindDashboardActions() {
       state.trades = [];
       state.users = [];
       state.totalUsdt = 0;
+      state.totalNgn = 0;
+      state.usdtNgnRate = 0;
       state.estimatedPnlValue = 0;
       state.estimatedPnlPercent = 0;
       state.tradeMarketMap = {};
       state.expandedTradeIds = [];
+      state.selectedHistoryTradeIds = [];
+      state.showSplash = false;
       tradeDraft = getTradeFormDefaults();
       render();
     });
@@ -1758,12 +2252,18 @@ async function bootstrap() {
   try {
     const me = await api("/api/auth/me");
     state.user = me.user;
-    await loadDashboardData();
+    if (state.user) {
+      await loadDashboardData();
+    } else {
+      disconnectWatchSocket();
+      stopTradeRefreshTimer();
+      startSplashSequence();
+    }
   } catch {
     state.user = null;
-    await loadWatchlistSeed();
     disconnectWatchSocket();
-    render();
+    stopTradeRefreshTimer();
+    startSplashSequence();
   } finally {
     endLoading();
   }

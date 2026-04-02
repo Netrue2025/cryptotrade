@@ -6,8 +6,8 @@ Crypto-only MVP built from the guidance in [`docs/trading-app-build-guide.md`](.
 
 - admin login dashboard
 - user registration and login
-- admin Binance spot account connection
-- user Binance spot account connection
+- admin Bybit spot account connection
+- user Bybit spot account connection
 - admin spot order placement
 - mirrored spot order placement for connected users with mirroring enabled
 - open trades list
@@ -35,6 +35,9 @@ PORT=3000
 APP_SECRET=change-this-before-production
 ADMIN_EMAIL=admin@trade.local
 ADMIN_PASSWORD=Admin123!
+# Optional Bybit endpoints
+# BYBIT_BASE_URL=https://api.bybit.com
+# BYBIT_TESTNET_URL=https://api-testnet.bybit.com
 ```
 
 ## Start
@@ -45,12 +48,11 @@ npm start
 
 Then open `http://localhost:3000`.
 
-## Important Binance Note
+## Important Bybit Note
 
-This MVP uses server-side signed Binance Spot API requests. For safety:
+This MVP uses server-side signed Bybit Spot API requests. For safety:
 
 - use API keys with trading enabled only if you intend to trade
 - keep withdrawal permission disabled
-- start with Binance testnet if you want to validate the flow first
+- start with Bybit testnet if you want to validate the flow first
 - the current implementation uses HMAC signing for compatibility and simplicity in this MVP
-
