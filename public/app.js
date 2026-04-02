@@ -44,6 +44,11 @@ const state = {
   showAllWatchlist: false,
   expandedTradeIds: [],
   selectedHistoryTradeIds: [],
+  settingsDraft: {
+    apiKey: "",
+    apiSecret: "",
+    testnet: "false",
+  },
   socket: null,
   socketRetry: null,
   socketRefreshTimer: null,
@@ -173,6 +178,14 @@ function formatUsdtUnit(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} USDT`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function icon(name) {
@@ -1102,8 +1115,11 @@ async function refreshWatchlistFeed() {
       refreshWatchlistDom();
     })
     .finally(() => {
+      const shouldRender = state.loadingWatchlist;
       state.loadingWatchlist = false;
-      render();
+      if (shouldRender) {
+        render();
+      }
       watchlistRefreshPromise = null;
     });
 
@@ -1656,6 +1672,7 @@ function renderOpenOrdersSection() {
 }
 
 function renderSettingsPane() {
+  const settingsDraft = state.settingsDraft || { apiKey: "", apiSecret: "", testnet: "false" };
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -1678,13 +1695,13 @@ function renderSettingsPane() {
         </div>
       </div>
       <form id="bybit-connect-form" class="stack-form">
-        <label>API key <input name="apiKey" placeholder="Paste Bybit API key" required /></label>
-        <label>API secret <input name="apiSecret" type="password" placeholder="Paste Bybit API secret" required /></label>
+        <label>API key <input name="apiKey" value="${escapeHtml(settingsDraft.apiKey)}" placeholder="Paste Bybit API key" required /></label>
+        <label>API secret <input name="apiSecret" type="password" value="${escapeHtml(settingsDraft.apiSecret)}" placeholder="Paste Bybit API secret" required /></label>
         <label>
           Environment
           <select name="testnet">
-            <option value="false">Mainnet</option>
-            <option value="true">Testnet</option>
+            <option value="false" ${settingsDraft.testnet !== "true" ? "selected" : ""}>Mainnet</option>
+            <option value="true" ${settingsDraft.testnet === "true" ? "selected" : ""}>Testnet</option>
           </select>
         </label>
         <button class="button-primary shimmer-button" type="submit">Connect Bybit</button>
@@ -1905,6 +1922,21 @@ function bindDashboardActions() {
 
   const connectForm = document.getElementById("bybit-connect-form");
   if (connectForm) {
+    connectForm.querySelectorAll("input, select").forEach((field) => {
+      field.addEventListener("input", () => {
+        state.settingsDraft = {
+          ...state.settingsDraft,
+          [field.name]: field.value,
+        };
+      });
+      field.addEventListener("change", () => {
+        state.settingsDraft = {
+          ...state.settingsDraft,
+          [field.name]: field.value,
+        };
+      });
+    });
+
     connectForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       await withLoading(async () => {
@@ -1918,6 +1950,11 @@ function bindDashboardActions() {
           }),
         });
         state.user = result.user;
+        state.settingsDraft = {
+          apiKey: "",
+          apiSecret: "",
+          testnet: "false",
+        };
         await loadDashboardData();
         showNotice("Bybit connected successfully");
       }).catch((error) => showError(error.message));
