@@ -3,7 +3,7 @@ const path = require("node:path");
 const http = require("node:http");
 
 const { loadDb, saveDb, ensureAdminUser, sanitizeUser } = require("./lib/db");
-const { encryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
+const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
 const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
 
 function loadEnvFile() {
@@ -355,6 +355,76 @@ function addBalanceFiatValue(balances, usdtNgnRate) {
   }));
 }
 
+function getGmtDateKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toISOString().slice(0, 10);
+}
+
+function getGmtMonthKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toISOString().slice(0, 7);
+}
+
+function ensureAccountPerformance(account) {
+  if (!account.performance || typeof account.performance !== "object") {
+    account.performance = {
+      dailyLedger: [],
+    };
+  }
+  if (!Array.isArray(account.performance.dailyLedger)) {
+    account.performance.dailyLedger = [];
+  }
+  return account.performance;
+}
+
+function updateAccountPerformance(account, totalUsdt) {
+  const performance = ensureAccountPerformance(account);
+  const now = new Date();
+  const todayKey = getGmtDateKey(now);
+  const currentMonthKey = getGmtMonthKey(now);
+  const ledger = performance.dailyLedger
+    .filter((entry) => entry && entry.dayKey)
+    .sort((a, b) => String(a.dayKey).localeCompare(String(b.dayKey)));
+  const latestPreviousEntry = [...ledger].reverse().find((entry) => String(entry.dayKey) < todayKey) || null;
+  let todayEntry = ledger.find((entry) => entry.dayKey === todayKey) || null;
+
+  if (!todayEntry) {
+    todayEntry = {
+      dayKey: todayKey,
+      openingUsdt: Number(latestPreviousEntry?.closingUsdt ?? totalUsdt),
+      closingUsdt: Number(totalUsdt || 0),
+      pnlValue: 0,
+      updatedAt: now.toISOString(),
+    };
+    ledger.push(todayEntry);
+  }
+
+  todayEntry.closingUsdt = Number(totalUsdt || 0);
+  todayEntry.pnlValue = Number(todayEntry.closingUsdt || 0) - Number(todayEntry.openingUsdt || 0);
+  todayEntry.updatedAt = now.toISOString();
+
+  const monthEntries = ledger.filter((entry) => String(entry.dayKey || "").startsWith(currentMonthKey));
+  const monthOpeningEntry = monthEntries[0] || todayEntry;
+  const monthOpeningUsdt = Number(monthOpeningEntry?.openingUsdt ?? totalUsdt);
+  const monthPnlValue = monthEntries.reduce((sum, entry) => sum + Number(entry.pnlValue || 0), 0);
+
+  performance.dailyLedger = ledger.slice(-400);
+
+  return {
+    todayLabel: todayKey,
+    todayPnlValue: Number(todayEntry.pnlValue || 0),
+    todayPnlPercent: Number(todayEntry.openingUsdt || 0)
+      ? (Number(todayEntry.pnlValue || 0) / Number(todayEntry.openingUsdt || 0)) * 100
+      : 0,
+    todayOpeningUsdt: Number(todayEntry.openingUsdt || 0),
+    todayClosingUsdt: Number(todayEntry.closingUsdt || 0),
+    monthLabel: currentMonthKey,
+    monthPnlValue,
+    monthPnlPercent: monthOpeningUsdt ? (monthPnlValue / monthOpeningUsdt) * 100 : 0,
+    monthOpeningUsdt,
+  };
+}
+
 function getApproxUsdtPriceForBalance(asset) {
   const name = String(asset?.asset || "").toUpperCase();
   if (["USDT", "USDC", "FDUSD", "BUSD"].includes(name)) {
@@ -484,6 +554,7 @@ async function getAccountSnapshot(account, exchange) {
     exchangeInfo
   );
   const pnl = calculatePortfolioPnl(balances);
+  const performance = updateAccountPerformance(account, pnl.totalUsdt);
   return {
     exchange,
     balances,
@@ -493,6 +564,15 @@ async function getAccountSnapshot(account, exchange) {
     usdtNgnRate: Number(usdtNgnRate || 0),
     estimatedPnlValue: pnl.estimatedPnlValue,
     estimatedPnlPercent: pnl.estimatedPnlPercent,
+    todayPnlValue: performance.todayPnlValue,
+    todayPnlPercent: performance.todayPnlPercent,
+    todayOpeningUsdt: performance.todayOpeningUsdt,
+    todayClosingUsdt: performance.todayClosingUsdt,
+    todayLabel: performance.todayLabel,
+    monthPnlValue: performance.monthPnlValue,
+    monthPnlPercent: performance.monthPnlPercent,
+    monthOpeningUsdt: performance.monthOpeningUsdt,
+    monthLabel: performance.monthLabel,
     permissions: account.permissions,
     openOrders,
   };
@@ -2108,6 +2188,35 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/exchange/settings") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+    const exchange = normalizeExchange(url.searchParams.get("exchange"), getPreferredExchange(user));
+    const account = getExchangeAccount(user, exchange);
+
+    if (!account) {
+      sendJson(res, 200, {
+        exchange,
+        connected: false,
+        apiKey: "",
+        apiSecret: "",
+        testnet: false,
+      });
+      return true;
+    }
+
+    sendJson(res, 200, {
+      exchange,
+      connected: true,
+      apiKey: String(account.apiKey || ""),
+      apiSecret: decryptSecret(account.secretEncrypted),
+      testnet: !!account.testnet,
+    });
     return true;
   }
 

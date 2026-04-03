@@ -506,6 +506,18 @@ button:active,
   white-space: nowrap;
 }
 
+.hero-return-tags {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.hero-return-tags .hero-chip {
+  width: fit-content;
+  max-width: 100%;
+  white-space: normal;
+}
+
 .carousel-hint {
   display: flex;
   gap: 8px;

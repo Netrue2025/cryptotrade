@@ -43,6 +43,12 @@ const state = {
   previousTotalUsdt: 0,
   totalNgn: 0,
   usdtNgnRate: 0,
+  todayPnlValue: 0,
+  todayPnlPercent: 0,
+  todayLabel: "",
+  monthPnlValue: 0,
+  monthPnlPercent: 0,
+  monthLabel: "",
   estimatedPnlValue: 0,
   estimatedPnlPercent: 0,
   loadingWatchlist: false,
@@ -480,6 +486,20 @@ function getInvestmentDailyReturnNgn() {
   return getInvestmentBalanceNgn() * 0.015;
 }
 
+function formatMonthLabel(monthKey) {
+  const raw = String(monthKey || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(raw)) {
+    return "This Month";
+  }
+  const [year, month] = raw.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, 1));
+  return date.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function formatDayLabel(dayKey) {
+  return dayKey ? `Today (${dayKey} GMT)` : "Today";
+}
+
 function getTradeEntryPrice(trade) {
   return Number(
     trade.price ||
@@ -635,6 +655,74 @@ function getTradePnlPercent(trade) {
   }
   const multiplier = trade.side === "SELL" ? -1 : 1;
   return ((current - entry) / entry) * 100 * multiplier;
+}
+
+function getTradeExitExecutionSnapshot(exitOrder) {
+  if (state.user?.role === "user") {
+    return exitOrder?.mirroredExecution?.order || null;
+  }
+  return exitOrder?.adminExecution || null;
+}
+
+function getExecutionAveragePrice(execution, fallbackPrice = 0) {
+  const directPrice = Number(execution?.price || 0);
+  if (directPrice > 0) {
+    return directPrice;
+  }
+
+  const executedQty = Number(execution?.executedQty || 0);
+  const quoteQty = Number(execution?.cummulativeQuoteQty || 0);
+  if (executedQty > 0 && quoteQty > 0) {
+    return quoteQty / executedQty;
+  }
+
+  return Number(fallbackPrice || 0);
+}
+
+function getTradeStaticPnlPercent(trade) {
+  const entry = getTradeEntryPrice(trade);
+  if (!entry) {
+    return 0;
+  }
+
+  if (trade.lifecycleStatus === "CANCELED") {
+    return 0;
+  }
+
+  if (trade.lifecycleStatus !== "CLOSED") {
+    return getTradePnlPercent(trade);
+  }
+
+  const filledExitExecutions = (trade.exitOrders || [])
+    .map((exitOrder) => ({
+      execution: getTradeExitExecutionSnapshot(exitOrder),
+      fallbackPrice: Number(exitOrder?.price || 0),
+    }))
+    .filter(({ execution }) => ["FILLED", "PARTIALLY_FILLED"].includes(String(execution?.status || "").toUpperCase()));
+
+  const totalExitQuantity = filledExitExecutions.reduce(
+    (sum, { execution }) => sum + Number(execution?.executedQty || 0),
+    0
+  );
+  const totalExitValue = filledExitExecutions.reduce((sum, { execution, fallbackPrice }) => {
+    const qty = Number(execution?.executedQty || 0);
+    const price = getExecutionAveragePrice(execution, fallbackPrice);
+    return sum + qty * price;
+  }, 0);
+
+  const closePrice = totalExitQuantity > 0 && totalExitValue > 0
+    ? totalExitValue / totalExitQuantity
+    : getExecutionAveragePrice(
+        state.user?.role === "user" ? trade.mirroredExecution?.order : trade.adminExecution,
+        Number(trade.price || 0)
+      );
+
+  if (!closePrice) {
+    return 0;
+  }
+
+  const multiplier = trade.side === "SELL" ? -1 : 1;
+  return ((closePrice - entry) / entry) * 100 * multiplier;
 }
 
 function getTradeExecutedQuantity(trade) {
@@ -1363,6 +1451,7 @@ function refreshTradeDom() {
     const symbol = row.dataset.tradeSymbolRow;
     const entry = Number(row.dataset.tradeEntry || 0);
     const side = row.dataset.tradeSide || "BUY";
+    const isStaticPnl = row.dataset.tradePnlStatic === "true";
     const market = getTradeCurrentMarket(symbol);
     const current = Number(market.price || 0);
     const pnlNode = row.querySelector("[data-trade-pnl]");
@@ -1384,7 +1473,7 @@ function refreshTradeDom() {
       );
       node.textContent = formatUsdtUnit(quantity * current);
     });
-    if (pnlNode) {
+    if (pnlNode && !isStaticPnl) {
       const multiplier = side === "SELL" ? -1 : 1;
       const pnl = entry && current ? ((current - entry) / entry) * 100 * multiplier : 0;
       pnlNode.textContent = `${pnl >= 0 ? "+" : ""}${formatNumber(pnl, 2)}%`;
@@ -1625,6 +1714,12 @@ function applyAccountSnapshot(account) {
     state.previousTotalUsdt = Number(account.previousTotalUsdt || 0);
     state.totalNgn = Number(account.totalNgn || 0);
     state.usdtNgnRate = Number(account.usdtNgnRate || 0);
+    state.todayPnlValue = Number(account.todayPnlValue || 0);
+    state.todayPnlPercent = Number(account.todayPnlPercent || 0);
+    state.todayLabel = String(account.todayLabel || "");
+    state.monthPnlValue = Number(account.monthPnlValue || 0);
+    state.monthPnlPercent = Number(account.monthPnlPercent || 0);
+    state.monthLabel = String(account.monthLabel || "");
     state.estimatedPnlValue = Number(account.estimatedPnlValue || 0);
     state.estimatedPnlPercent = Number(account.estimatedPnlPercent || 0);
     return;
@@ -1636,8 +1731,41 @@ function applyAccountSnapshot(account) {
   state.previousTotalUsdt = 0;
   state.totalNgn = 0;
   state.usdtNgnRate = 0;
+  state.todayPnlValue = 0;
+  state.todayPnlPercent = 0;
+  state.todayLabel = "";
+  state.monthPnlValue = 0;
+  state.monthPnlPercent = 0;
+  state.monthLabel = "";
   state.estimatedPnlValue = 0;
   state.estimatedPnlPercent = 0;
+}
+
+async function loadSavedExchangeSettings(exchange) {
+  const targetExchange = exchange || getActiveExchange();
+  if (!state.user) {
+    state.settingsDraft = {
+      apiKey: "",
+      apiSecret: "",
+      testnet: "false",
+    };
+    return;
+  }
+
+  try {
+    const payload = await api(`/api/exchange/settings?exchange=${encodeURIComponent(targetExchange)}`);
+    state.settingsDraft = {
+      apiKey: payload.apiKey || "",
+      apiSecret: payload.apiSecret || "",
+      testnet: payload.testnet ? "true" : "false",
+    };
+  } catch {
+    state.settingsDraft = {
+      apiKey: "",
+      apiSecret: "",
+      testnet: "false",
+    };
+  }
 }
 
 async function loadDashboardData() {
@@ -1654,6 +1782,10 @@ async function loadDashboardData() {
   state.loadingTrades = !state.trades.length;
   state.loadingUsers = !!(state.user.role === "admin" && !state.users.length);
   render();
+
+  const settingsPromise = loadSavedExchangeSettings(getActiveExchange()).then(() => {
+    render();
+  });
 
   const watchlistPromise = refreshWatchlistFeed()
     .then(() => {
@@ -1705,6 +1837,7 @@ async function loadDashboardData() {
   void refreshTradeMarketData();
   startTradeRefreshTimer();
   void accountPromise;
+  void settingsPromise;
   void watchlistPromise;
 }
 
@@ -1878,11 +2011,12 @@ function renderBottomNav() {
 
 function renderSummaryCard() {
   const portfolioBalance = Number(state.totalUsdt || 0);
-  const previousPortfolioBalance = Number(state.previousTotalUsdt || 0);
   const investmentBalance = getInvestmentBalanceNgn();
   const investmentDailyReturn = getInvestmentDailyReturnNgn();
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
+  const todayPositive = Number(state.todayPnlValue || 0) >= 0;
+  const monthPositive = Number(state.monthPnlValue || 0) >= 0;
   const chips =
     state.user?.role === "admin"
       ? [
@@ -1901,11 +2035,12 @@ function renderSummaryCard() {
         <article class="summary-hero balance-slide">
           ${accountLoading ? renderSectionLoadingOverlay("Loading balances", `Syncing your ${exchangeLabel} balance cards`) : ""}
           <div>
-            <p class="eyebrow light">App Balance</p>
+            <p class="eyebrow light">Live Account Balance</p>
             <h2>${formatUsdt(portfolioBalance)}</h2>
-            <p class="muted-bright">Live app balance from your connected ${exchangeLabel} spot wallet.</p>
-            <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h balance ${state.estimatedPnlValue >= 0 ? "gain" : "loss"} ${state.estimatedPnlValue >= 0 ? "+" : "-"}${formatUsdt(Math.abs(state.estimatedPnlValue))} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
-            <p class="muted-bright">Previous 24h balance ${previousPortfolioBalance > 0 ? formatUsdt(previousPortfolioBalance) : "--"}</p>
+            <div class="hero-return-tags">
+              <span class="hero-chip ${todayPositive ? "positive" : "negative"}">Today's return ${todayPositive ? "+" : "-"}${formatUsdt(Math.abs(state.todayPnlValue || 0))} ${state.todayPnlPercent >= 0 ? "+" : ""}${formatNumber(state.todayPnlPercent, 2)}%</span>
+              <span class="hero-chip ${monthPositive ? "positive" : "negative"}">${formatMonthLabel(state.monthLabel)} return ${monthPositive ? "+" : "-"}${formatUsdt(Math.abs(state.monthPnlValue || 0))} ${state.monthPnlPercent >= 0 ? "+" : ""}${formatNumber(state.monthPnlPercent, 2)}%</span>
+            </div>
           </div>
           <div class="hero-chip-row">
             ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
@@ -2583,7 +2718,7 @@ function renderSettingsPane() {
         <input type="hidden" name="exchange" value="${activeExchange}" />
         ${
           state.user.exchangeAccounts?.[activeExchange]
-            ? `<p class="muted-copy">Saved ${activeExchangeLabel} API credentials are already linked. Reconnect only if you want to replace them.</p>`
+            ? `<p class="muted-copy">Saved ${activeExchangeLabel} API credentials are linked and prefilled here. Update them only if you want to replace the current connection.</p>`
             : `<p class="muted-copy">Connect ${activeExchangeLabel} once and the app will remember it for future logins.</p>`
         }
         <label>API key <input name="apiKey" value="${escapeHtml(settingsDraft.apiKey)}" placeholder="Paste ${activeExchangeLabel} API key" required /></label>
@@ -2684,9 +2819,10 @@ function renderHistoryContent() {
           const currentPrice = Number(getTradeCurrentMarket(trade.symbol).price || 0);
           const remainingQuantity = getTradeRemainingQuantity(trade);
           const currentValue = (remainingQuantity || getTradeExecutedQuantity(trade)) * currentPrice;
-          const pnlPercent = entryPrice && currentPrice ? getTradePnlPercent(trade) : 0;
+          const useStaticPnl = ["CANCELED", "CLOSED"].includes(String(trade.lifecycleStatus || "").toUpperCase());
+          const pnlPercent = useStaticPnl ? getTradeStaticPnlPercent(trade) : (entryPrice && currentPrice ? getTradePnlPercent(trade) : 0);
           return `
-            <div class="asset-card history-row" data-trade-symbol-row="${trade.symbol}" data-trade-entry="${entryPrice}" data-trade-side="${trade.side}" data-trade-quantity="${remainingQuantity || getTradeExecutedQuantity(trade)}">
+            <div class="asset-card history-row" data-trade-symbol-row="${trade.symbol}" data-trade-entry="${entryPrice}" data-trade-side="${trade.side}" data-trade-quantity="${remainingQuantity || getTradeExecutedQuantity(trade)}" data-trade-pnl-static="${useStaticPnl ? "true" : "false"}">
               ${
                 canClearHistory
                   ? `
@@ -2829,11 +2965,6 @@ function bindDashboardActions() {
           });
           state.user = result.user;
           setSelectedExchange(state.user.activeExchange || exchangeSelect.value);
-          state.settingsDraft = {
-            apiKey: "",
-            apiSecret: "",
-            testnet: "false",
-          };
           await loadDashboardData();
           showNotice(`${getExchangeLabel(getActiveExchange())} is now active`);
         }).catch((error) => showError(error.message));
@@ -2873,11 +3004,6 @@ function bindDashboardActions() {
         });
         state.user = result.user;
         setSelectedExchange(state.user.activeExchange || data.exchange || getActiveExchange());
-        state.settingsDraft = {
-          apiKey: "",
-          apiSecret: "",
-          testnet: "false",
-        };
         await loadDashboardData();
         showNotice(`${getExchangeLabel(getActiveExchange())} connected successfully`);
       }).catch((error) => showError(error.message));
@@ -2984,6 +3110,12 @@ function bindDashboardActions() {
       state.previousTotalUsdt = 0;
       state.totalNgn = 0;
       state.usdtNgnRate = 0;
+      state.todayPnlValue = 0;
+      state.todayPnlPercent = 0;
+      state.todayLabel = "";
+      state.monthPnlValue = 0;
+      state.monthPnlPercent = 0;
+      state.monthLabel = "";
       state.estimatedPnlValue = 0;
       state.estimatedPnlPercent = 0;
       state.signalChart = {
