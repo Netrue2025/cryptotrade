@@ -437,9 +437,16 @@ button:active,
 .chip-row,
 .hero-chip-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.chip-row::-webkit-scrollbar,
+.hero-chip-row::-webkit-scrollbar {
+  display: none;
 }
 
 .soft-chip,
@@ -460,7 +467,8 @@ button:active,
 }
 
 .summary-hero {
-  padding: 20px;
+  min-height: 188px;
+  padding: 16px 18px;
   color: #fff;
   background:
     radial-gradient(circle at top right, rgba(255, 255, 255, 0.18), transparent 10rem),
@@ -468,8 +476,8 @@ button:active,
 }
 
 .summary-hero h2 {
-  margin: 8px 0;
-  font-size: 2.2rem;
+  margin: 6px 0;
+  font-size: 1.9rem;
 }
 
 .balance-carousel {
@@ -495,6 +503,7 @@ button:active,
 .hero-chip {
   background: rgba(255, 255, 255, 0.16);
   color: #fff;
+  white-space: nowrap;
 }
 
 .carousel-hint {
@@ -516,8 +525,57 @@ button:active,
 }
 
 .summary-subline {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   font-weight: 800;
+}
+
+.signal-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 900;
+}
+
+.signal-chart-card {
+  position: relative;
+}
+
+.signal-chart-shell {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.signal-chart {
+  width: 100%;
+  height: 180px;
+  display: block;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(47, 125, 246, 0.08), rgba(47, 125, 246, 0.02));
+}
+
+.signal-chart-line {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.signal-chart-line.positive {
+  stroke: #16c47f;
+}
+
+.signal-chart-line.negative {
+  stroke: #ff4d6d;
+}
+
+.signal-chart-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
 }
 
 .summary-hero,

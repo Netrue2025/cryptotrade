@@ -36,6 +36,8 @@ const BYBIT_USDT_NGN_URL = process.env.BYBIT_USDT_NGN_URL || "https://www.bybit.
 const FIAT_RATE_CACHE_TTL_MS = 1000 * 60 * 15;
 const MARKET_WATCHLIST_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "PEPEUSDT"];
 const WATCHLIST_CACHE_TTL_MS = 1000 * 10;
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 3;
+const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_MS / 1000);
 
 const db = loadDb();
 ensureAdminUser(db);
@@ -75,6 +77,10 @@ function getUserExchange(user, preferred = getPreferredExchange(user)) {
 
 function getExchangeAccount(user, exchange = getPreferredExchange(user)) {
   return user?.[normalizeExchange(exchange)] || null;
+}
+
+function getUserMarketExchange(user) {
+  return getConnectedExchange(user, getPreferredExchange(user));
 }
 
 function getExchangeLabel(exchange) {
@@ -141,6 +147,10 @@ async function getTickerPrice(symbol, testnet, exchange = "bybit") {
 
 async function getTickerPrices(testnet, exchange = "bybit") {
   return getExchangeClient(exchange).getTickerPrices(testnet);
+}
+
+async function getCandles(symbol, interval, limit, testnet, exchange = "bybit") {
+  return getExchangeClient(exchange).getCandles(symbol, interval, limit, testnet);
 }
 
 async function placeSpotOrder(account, orderInput, exchange = getAccountExchange(account)) {
@@ -235,7 +245,7 @@ function createSession(userId) {
     id: randomId(18),
     userId,
     createdAt: nowIso(),
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString(),
+    expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
   };
   db.sessions = db.sessions.filter((item) => item.userId !== userId);
   db.sessions.push(session);
@@ -273,8 +283,7 @@ function toSafeBalances(accountInfo) {
       locked: Number(asset.locked),
     }))
     .filter((asset) => asset.free > 0 || asset.locked > 0)
-    .sort((a, b) => b.free + b.locked - (a.free + a.locked))
-    .slice(0, 12);
+    .sort((a, b) => b.free + b.locked - (a.free + a.locked));
 }
 
 function enrichBalancesWithUsdtValue(balances, tickers) {
@@ -307,10 +316,14 @@ function addBalanceMarketStats(balances, stats24h) {
   return balances.map((asset) => {
     const symbol = `${asset.asset}USDT`;
     const changePercent = asset.asset === "USDT" ? 0 : Number(statsMap.get(symbol) || 0);
-    const estimatedPnlValue = Number(asset.usdtValue || 0) * (changePercent / 100);
+    const currentUsdtValue = Number(asset.usdtValue || 0);
+    const ratio = 1 + changePercent / 100;
+    const previousUsdtValue = asset.asset === "USDT" || ratio <= 0 ? currentUsdtValue : currentUsdtValue / ratio;
+    const estimatedPnlValue = currentUsdtValue - previousUsdtValue;
     return {
       ...asset,
       changePercent,
+      previousUsdtValue,
       estimatedPnlValue,
     };
   });
@@ -318,8 +331,9 @@ function addBalanceMarketStats(balances, stats24h) {
 
 function calculatePortfolioPnl(balances) {
   const totalUsdt = balances.reduce((sum, item) => sum + Number(item.usdtValue || 0), 0);
+  const previousTotalUsdt = balances.reduce((sum, item) => sum + Number(item.previousUsdtValue || item.usdtValue || 0), 0);
   const estimatedPnlValue = balances.reduce((sum, item) => sum + Number(item.estimatedPnlValue || 0), 0);
-  const estimatedPnlPercent = totalUsdt ? (estimatedPnlValue / totalUsdt) * 100 : 0;
+  const estimatedPnlPercent = previousTotalUsdt ? (estimatedPnlValue / previousTotalUsdt) * 100 : 0;
   return {
     totalUsdt,
     estimatedPnlValue,
@@ -490,6 +504,11 @@ async function getMarketWatchlist(testnet = false, exchange = "bybit") {
   });
 
   return items;
+}
+
+function shouldPersistLoginExchange(user, exchange) {
+  const normalizedExchange = normalizeExchange(exchange, "bybit");
+  return !user?.bybit && !user?.binance ? true : !!user?.[normalizedExchange];
 }
 
 function getAdminManagedUser(userId) {
@@ -1637,7 +1656,7 @@ function buildSessionCookie(req, value, maxAgeSeconds = 0) {
 }
 
 function sendSessionCookie(req, res, sessionId) {
-  res.setHeader("Set-Cookie", buildSessionCookie(req, sessionId, 60 * 60 * 24 * 7));
+  res.setHeader("Set-Cookie", buildSessionCookie(req, sessionId, SESSION_TTL_SECONDS));
 }
 
 function clearSessionCookie(req, res) {
@@ -1701,7 +1720,9 @@ async function handleApi(req, res, url) {
     }
 
     const session = createSession(user.id);
-    setUserPreferredExchange(user, exchange);
+    if (shouldPersistLoginExchange(user, exchange)) {
+      setUserPreferredExchange(user, exchange);
+    }
     persist();
     sendSessionCookie(req, res, session.id);
     sendJson(res, 200, { user: sanitizeUser(user) });
@@ -1718,7 +1739,7 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/market/watchlist") {
     try {
       const currentUser = getCurrentUser(req);
-      const exchange = currentUser ? getPreferredExchange(currentUser) : "bybit";
+      const exchange = currentUser ? getUserMarketExchange(currentUser) : "bybit";
       const testnet = !!getExchangeAccount(currentUser, exchange)?.testnet;
       const watchlist = await getMarketWatchlist(testnet, exchange);
       sendJson(res, 200, { watchlist });
@@ -1743,7 +1764,7 @@ async function handleApi(req, res, url) {
 
     try {
       const currentUser = getCurrentUser(req);
-      const exchange = currentUser ? getPreferredExchange(currentUser) : "bybit";
+      const exchange = currentUser ? getUserMarketExchange(currentUser) : "bybit";
       const testnet = !!getExchangeAccount(currentUser, exchange)?.testnet;
       const [prices, stats] = await Promise.all([
         Promise.all(symbols.map((symbol) => getTickerPrice(symbol, testnet, exchange))),
@@ -1760,6 +1781,28 @@ async function handleApi(req, res, url) {
         turnover24h: Number(statsMap.get(item.symbol)?.turnover24h || 0),
       }));
       sendJson(res, 200, { prices: payload });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/market/chart") {
+    const symbol = String(url.searchParams.get("symbol") || "").trim().toUpperCase();
+    const interval = String(url.searchParams.get("interval") || "15m").trim();
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 48), 12), 96);
+
+    if (!symbol) {
+      sendJson(res, 400, { error: "Symbol is required." });
+      return true;
+    }
+
+    try {
+      const currentUser = getCurrentUser(req);
+      const exchange = currentUser ? getUserMarketExchange(currentUser) : "bybit";
+      const testnet = !!getExchangeAccount(currentUser, exchange)?.testnet;
+      const candles = await getCandles(symbol, interval, limit, testnet, exchange);
+      sendJson(res, 200, { symbol, interval, exchange, candles });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
     }

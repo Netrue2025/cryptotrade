@@ -44,6 +44,12 @@ const state = {
   loadingTrades: false,
   loadingUsers: false,
   watchlistSeed: [],
+  signalChart: {
+    symbol: "",
+    interval: "15m",
+    candles: [],
+    loading: false,
+  },
   liveMap: {},
   tradeMarketMap: {},
   showAllBalances: false,
@@ -304,6 +310,32 @@ function getConnectedExchanges(user) {
   return EXCHANGE_OPTIONS.filter((exchange) => user[`${exchange.id}Connected`]);
 }
 
+function getDetectedSpotHoldings() {
+  const activeTradeSymbols = new Set((state.trades || []).filter(isTradeStrictlyOpen).map((trade) => trade.symbol));
+  const stableAssets = new Set(["USDT", "USDC", "FDUSD", "BUSD"]);
+
+  return (state.balances || [])
+    .filter((balance) => Number(balance.total || 0) > 0 && !stableAssets.has(String(balance.asset || "").toUpperCase()))
+    .map((balance) => {
+      const symbol = `${String(balance.asset || "").toUpperCase()}USDT`;
+      const total = Number(balance.total || 0);
+      const derivedPrice = total ? Number(balance.usdtValue || 0) / total : 0;
+      return {
+        id: `external-${symbol}`,
+        symbol,
+        asset: balance.asset,
+        quantity: total,
+        currentPrice: Number(getTradeCurrentMarket(symbol).price || derivedPrice || 0),
+        currentValue: Number(balance.usdtValue || 0),
+        changePercent: Number(balance.changePercent || 0),
+        exchange: getActiveExchange(),
+        lifecycleStatus: "OPEN",
+        external: true,
+      };
+    })
+    .filter((holding) => !activeTradeSymbols.has(holding.symbol) && holding.currentValue > 0);
+}
+
 function getTradeSymbolSuggestions() {
   return [...new Set([
     ...WATCH_SYMBOLS,
@@ -431,6 +463,35 @@ function getTradeEntryPrice(trade) {
 
 function getTradeCurrentMarket(symbol) {
   return state.tradeMarketMap[symbol] || getSymbolData(symbol) || { price: 0, changePercent: 0 };
+}
+
+function getSelectedSignalSymbol() {
+  const selected = String(state.signalChart.symbol || "").trim().toUpperCase();
+  if (selected) {
+    return selected;
+  }
+  const { topPump, topDip } = getAiRecommendations();
+  return topPump?.symbol || topDip?.symbol || "";
+}
+
+function buildSparklinePath(values, width, height, padding = 8) {
+  if (!values.length) {
+    return "";
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  const range = max - min || 1;
+
+  return values
+    .map((value, index) => {
+      const x = padding + (usableWidth * index) / Math.max(values.length - 1, 1);
+      const y = padding + usableHeight - ((value - min) / range) * usableHeight;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
 }
 
 function getTradePnlPercent(trade) {
@@ -1002,6 +1063,57 @@ function refreshAiSignalDom() {
   if (host) {
     host.innerHTML = renderAiSignalCard();
   }
+  bindSignalCardActions();
+}
+
+function refreshSignalChartDom() {
+  const host = document.querySelector("[data-signal-chart-host]");
+  if (host) {
+    host.innerHTML = renderSignalChartSection();
+  }
+}
+
+async function loadSignalChart(symbol, options = {}) {
+  const nextSymbol = String(symbol || "").trim().toUpperCase();
+  if (!nextSymbol) {
+    return;
+  }
+
+  if (!options.silent) {
+    state.signalChart = {
+      ...state.signalChart,
+      symbol: nextSymbol,
+      loading: true,
+    };
+    refreshSignalChartDom();
+  }
+
+  try {
+    const payload = await api(`/api/market/chart?symbol=${encodeURIComponent(nextSymbol)}&interval=${encodeURIComponent(state.signalChart.interval || "15m")}&limit=48`);
+    state.signalChart = {
+      ...state.signalChart,
+      symbol: nextSymbol,
+      candles: payload.candles || [],
+      loading: false,
+    };
+  } catch {
+    state.signalChart = {
+      ...state.signalChart,
+      symbol: nextSymbol,
+      candles: [],
+      loading: false,
+    };
+  }
+
+  refreshSignalChartDom();
+}
+
+function bindSignalCardActions() {
+  document.querySelectorAll("[data-signal-symbol]").forEach((button) => {
+    button.onclick = () => {
+      void loadSignalChart(button.dataset.signalSymbol);
+    };
+  });
 }
 
 function refreshTradeDom() {
@@ -1129,6 +1241,7 @@ async function refreshTradeMarketData() {
   const symbols = [...new Set([
     ...state.trades.map((trade) => trade.symbol),
     ...(state.openOrders || []).map((order) => order.symbol),
+    ...getDetectedSpotHoldings().map((holding) => holding.symbol),
   ].filter(Boolean))];
   if (!symbols.length) {
     return;
@@ -1221,12 +1334,17 @@ async function refreshWatchlistFeed() {
       hydrateWatchlistFromSeed();
       refreshWatchlistDom();
       refreshAiSignalDom();
+      const signalSymbol = getSelectedSignalSymbol();
+      if (signalSymbol) {
+        return loadSignalChart(signalSymbol, { silent: true });
+      }
     })
     .catch(() => {
       state.watchlistSeed = [];
       hydrateWatchlistFromSeed();
       refreshWatchlistDom();
       refreshAiSignalDom();
+      refreshSignalChartDom();
     })
     .finally(() => {
       const shouldRender = state.loadingWatchlist;
@@ -1537,8 +1655,8 @@ function renderSummaryCard() {
           <div>
             <p class="eyebrow light">Spot Balance</p>
             <h2>${formatUsdt(state.totalUsdt)}</h2>
-            <p class="muted-bright">Live estimate based on ${exchangeLabel} spot balances.</p>
-            <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h est. PnL ${state.estimatedPnlValue >= 0 ? "+" : ""}${formatUsdt(state.estimatedPnlValue)} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
+            <p class="muted-bright">Live portfolio value from your connected ${exchangeLabel} spot wallet.</p>
+            <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h market move ${state.estimatedPnlValue >= 0 ? "+" : ""}${formatUsdt(state.estimatedPnlValue)} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
           </div>
           <div class="hero-chip-row">
             ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
@@ -1752,17 +1870,54 @@ function renderAiSignalCard() {
       <div class="ai-grid">
         <div class="ai-pick">
           <p class="eyebrow">Top Pump</p>
-          <h4>${topPump ? topPump.symbol : "--"}</h4>
+          <h4>${topPump ? `<button class="signal-link" data-signal-symbol="${topPump.symbol}" type="button">${topPump.symbol}</button>` : "--"}</h4>
           <p class="muted-copy">${topPump ? `${formatNumber(topPump.changePercent, 2)}% move with ${formatUsdt(topPump.turnover24h)} turnover.` : "Waiting for market data."}</p>
           <p class="muted-copy">${buildAiTradingHint(topPump, "pump")}</p>
         </div>
         <div class="ai-pick dip">
           <p class="eyebrow">Top Dip</p>
-          <h4>${topDip ? topDip.symbol : "--"}</h4>
+          <h4>${topDip ? `<button class="signal-link" data-signal-symbol="${topDip.symbol}" type="button">${topDip.symbol}</button>` : "--"}</h4>
           <p class="muted-copy">${topDip ? `${formatNumber(topDip.changePercent, 2)}% move with ${formatUsdt(topDip.turnover24h)} turnover.` : "Waiting for market data."}</p>
           <p class="muted-copy">${buildAiTradingHint(topDip, "dip")}</p>
         </div>
       </div>
+    </section>
+  `;
+}
+
+function renderSignalChartSection() {
+  const symbol = getSelectedSignalSymbol();
+  const candles = state.signalChart.candles || [];
+  const closes = candles.map((item) => Number(item.close || 0)).filter((value) => Number.isFinite(value) && value > 0);
+  const path = closes.length ? buildSparklinePath(closes, 320, 160) : "";
+  const first = closes[0] || 0;
+  const last = closes[closes.length - 1] || 0;
+  const movePercent = first && last ? ((last - first) / first) * 100 : 0;
+
+  return `
+    <section class="mobile-card signal-chart-card${state.signalChart.loading ? " is-section-loading" : ""}">
+      ${state.signalChart.loading ? renderSectionLoadingOverlay("Loading chart", "Pulling live candles from the active exchange") : ""}
+      <div class="section-head">
+        <div>
+          <h3>Signal Chart</h3>
+          <p class="muted-copy">${symbol ? `${symbol} ${state.signalChart.interval} live candles from ${getExchangeLabel(getActiveExchange())}.` : "Tap Top Pump or Top Dip to load a live chart."}</p>
+        </div>
+      </div>
+      ${
+        symbol && path
+          ? `
+            <div class="signal-chart-shell">
+              <svg viewBox="0 0 320 160" class="signal-chart" role="img" aria-label="${symbol} live chart">
+                <path d="${path}" class="signal-chart-line ${movePercent >= 0 ? "positive" : "negative"}"></path>
+              </svg>
+              <div class="signal-chart-meta">
+                <strong>${symbol}</strong>
+                <p class="muted-copy">Last ${last ? formatNumber(last, 8) : "--"} | ${movePercent >= 0 ? "+" : ""}${formatNumber(movePercent, 2)}%</p>
+              </div>
+            </div>
+          `
+          : `<p class="muted-copy">No chart loaded yet.</p>`
+      }
     </section>
   `;
 }
@@ -1833,8 +1988,49 @@ function renderPendingOrderDisclosure(order, options = {}) {
   `;
 }
 
+function renderExternalHoldingDisclosure(holding) {
+  const isExpanded = state.expandedTradeIds.includes(holding.id);
+  return `
+    <details class="trade-disclosure trade-row-rich" data-trade-id="${holding.id}" data-trade-symbol-row="${holding.symbol}" data-trade-entry="${holding.currentPrice}" data-trade-side="BUY" data-trade-quantity="${holding.quantity}" ${isExpanded ? "open" : ""}>
+      <summary class="trade-summary-row">
+        <div>
+          <strong>${holding.symbol}</strong>
+          <p class="muted-copy">${renderExchangeBadge(holding.exchange)}</p>
+          <p class="muted-copy" data-trade-current-value>${formatUsdtUnit(holding.currentValue)}</p>
+        </div>
+        <div class="asset-values">
+          ${renderTradeStatusBadge("OPEN")}
+          <strong class="${holding.changePercent >= 0 ? "positive" : "negative"}">${holding.changePercent >= 0 ? "+" : ""}${formatNumber(holding.changePercent, 2)}%</strong>
+        </div>
+      </summary>
+      <div class="trade-disclosure-body">
+        <div class="trade-detail-grid">
+          <div class="trade-detail-pill">
+            <span>Source</span>
+            <strong>Exchange</strong>
+          </div>
+          <div class="trade-detail-pill">
+            <span>Quantity</span>
+            <strong>${formatNumber(holding.quantity, 8)}</strong>
+          </div>
+          <div class="trade-detail-pill">
+            <span>Asset</span>
+            <strong>${holding.asset}</strong>
+          </div>
+        </div>
+        <div class="trade-detail-lines">
+          <p class="muted-copy">Detected from your live ${getExchangeLabel(holding.exchange)} balance even without an app-created trade record.</p>
+          <p class="muted-copy">Current ${holding.currentPrice ? formatNumber(holding.currentPrice, 8) : "-"}</p>
+          <p class="muted-copy">Live value ${formatUsdtUnit(holding.currentValue)}</p>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 function renderOpenOrdersSection() {
     const openTrades = state.trades.filter(isTradeStrictlyOpen).slice(0, 5);
+    const detectedHoldings = getDetectedSpotHoldings().slice(0, 5);
     const openOrders = (state.openOrders || []).slice(0, 5);
     const canManageTrades = state.user?.role === "admin";
     return `
@@ -1910,7 +2106,9 @@ function renderOpenOrdersSection() {
                   `;
                 }
               )
-            .join("") || `<p class="muted-copy">No open trades yet.</p>`}
+            .join("")}
+            ${detectedHoldings.map((holding) => renderExternalHoldingDisclosure(holding)).join("")}
+            ${!openTrades.length && !detectedHoldings.length ? `<p class="muted-copy">No open trades yet.</p>` : ""}
         </div>
       </div>
       <div>
@@ -2018,6 +2216,11 @@ function renderSettingsPane() {
       </form>
       <form id="exchange-connect-form" class="stack-form">
         <input type="hidden" name="exchange" value="${activeExchange}" />
+        ${
+          state.user.exchangeAccounts?.[activeExchange]
+            ? `<p class="muted-copy">Saved ${activeExchangeLabel} API credentials are already linked. Reconnect only if you want to replace them.</p>`
+            : `<p class="muted-copy">Connect ${activeExchangeLabel} once and the app will remember it for future logins.</p>`
+        }
         <label>API key <input name="apiKey" value="${escapeHtml(settingsDraft.apiKey)}" placeholder="Paste ${activeExchangeLabel} API key" required /></label>
         <label>API secret <input name="apiSecret" type="password" value="${escapeHtml(settingsDraft.apiSecret)}" placeholder="Paste ${activeExchangeLabel} API secret" required /></label>
         <label>
@@ -2050,7 +2253,7 @@ function renderSettingsPane() {
         <div class="section-head">
           <div>
             <h3>${state.user.role === "admin" ? "Registered Users" : "Account Summary"}</h3>
-            <p class="muted-copy">${state.user.role === "admin" ? "Open any user below to reset passwords, disconnect mirror trading, or remove the account." : "Your linked account and mirror status."}</p>
+            <p class="muted-copy">${state.user.role === "admin" ? "All registered users appear below whether they have connected an exchange or not." : "Your linked account and mirror status."}</p>
           </div>
         </div>
         <div class="card-list">
@@ -2093,6 +2296,7 @@ function renderSettingsPane() {
 function renderSignalsPane() {
   return `
     <div data-ai-signal-host>${renderAiSignalCard()}</div>
+    <div data-signal-chart-host>${renderSignalChartSection()}</div>
     ${renderWatchlistSection()}
   `;
 }
@@ -2257,6 +2461,7 @@ function renderDashboardShell() {
 function bindDashboardActions() {
   bindHistoryActions();
   bindAdminUserDisclosureToggles();
+  bindSignalCardActions();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -2426,6 +2631,12 @@ function bindDashboardActions() {
       state.usdtNgnRate = 0;
       state.estimatedPnlValue = 0;
       state.estimatedPnlPercent = 0;
+      state.signalChart = {
+        symbol: "",
+        interval: "15m",
+        candles: [],
+        loading: false,
+      };
       state.tradeMarketMap = {};
       state.expandedTradeIds = [];
       state.expandedPendingOrderIds = [];
