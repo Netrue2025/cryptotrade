@@ -336,6 +336,7 @@ function calculatePortfolioPnl(balances) {
   const estimatedPnlPercent = previousTotalUsdt ? (estimatedPnlValue / previousTotalUsdt) * 100 : 0;
   return {
     totalUsdt,
+    previousTotalUsdt,
     estimatedPnlValue,
     estimatedPnlPercent,
   };
@@ -352,6 +353,191 @@ function addBalanceFiatValue(balances, usdtNgnRate) {
     ...asset,
     ngnValue: rate > 0 ? Number(asset.usdtValue || 0) * rate : 0,
   }));
+}
+
+function getApproxUsdtPriceForBalance(asset) {
+  const name = String(asset?.asset || "").toUpperCase();
+  if (["USDT", "USDC", "FDUSD", "BUSD"].includes(name)) {
+    return 1;
+  }
+
+  const total = Number(asset?.total || 0);
+  if (!total) {
+    return 0;
+  }
+
+  return Number(asset?.usdtValue || 0) / total;
+}
+
+function addBalanceTradability(balances, exchangeInfo) {
+  const symbolMap = new Map((exchangeInfo?.symbols || []).map((item) => [item.symbol, item]));
+
+  return balances.map((asset) => {
+    const balanceSymbol = `${String(asset.asset || "").toUpperCase()}USDT`;
+    const details = symbolMap.get(balanceSymbol);
+    const filters = details?.filters || [];
+    const quantityFilter = getEffectiveQuantityFilter(filters, "MARKET") || getEffectiveQuantityFilter(filters, "LIMIT");
+    const notionalFilter = getFilter(filters, "NOTIONAL") || getFilter(filters, "MIN_NOTIONAL");
+    const availableQuantity = Number(asset.free || 0);
+    const totalQuantity = Number(asset.total || 0);
+    const currentPrice = getApproxUsdtPriceForBalance(asset);
+    const normalizedTradableQuantity = quantityFilter?.stepSize
+      ? Number(normalizeQuantityToStep(availableQuantity, quantityFilter.stepSize))
+      : availableQuantity;
+    const minQty = Number(quantityFilter?.minQty || 0);
+    const minNotional = Number(notionalFilter?.minNotional || 0);
+    const tradableNotional = normalizedTradableQuantity * currentPrice;
+    const hasTradableQuantity = normalizedTradableQuantity > 0;
+    const meetsMinQty = !minQty || normalizedTradableQuantity >= minQty;
+    const meetsMinNotional = !minNotional || tradableNotional >= minNotional;
+    const spotSellTradable = !details
+      ? totalQuantity > 0
+      : hasTradableQuantity && meetsMinQty && meetsMinNotional;
+
+    return {
+      ...asset,
+      balanceSymbol,
+      unitPriceUsdt: currentPrice,
+      spotTradableQuantity: normalizedTradableQuantity,
+      spotTradableMinQty: minQty,
+      spotTradableMinNotional: minNotional,
+      spotTradableNotional: tradableNotional,
+      spotSellTradable,
+    };
+  });
+}
+
+function summarizeWalletBalances(balances, usdtNgnRate) {
+  const rate = Number(usdtNgnRate || 0);
+  const totalUsdt = balances.reduce((sum, item) => sum + Number(item.usdtValue || 0), 0);
+
+  return {
+    totalUsdt,
+    totalNgn: rate > 0 ? totalUsdt * rate : 0,
+    assetCount: balances.length,
+    topAssets: balances.slice(0, 3).map((asset) => ({
+      asset: asset.asset,
+      total: Number(asset.total || 0),
+      usdtValue: Number(asset.usdtValue || 0),
+    })),
+  };
+}
+
+function formatSignedPercent(value) {
+  const amount = Number(value || 0);
+  return `${amount >= 0 ? "+" : ""}${amount.toFixed(2)}%`;
+}
+
+function calculateCandleMove(candles) {
+  const first = Array.isArray(candles) ? candles[0] : null;
+  const last = Array.isArray(candles) ? candles[candles.length - 1] : null;
+  const startPrice = Number(first?.open || first?.close || 0);
+  const endPrice = Number(last?.close || last?.open || 0);
+  if (!startPrice || !endPrice) {
+    return 0;
+  }
+  return ((endPrice - startPrice) / startPrice) * 100;
+}
+
+async function buildBybitAiInsight(item, mode) {
+  try {
+    const [candles15m, candles1h, candles1d] = await Promise.all([
+      getCandles(item.symbol, "15m", 8, false, "bybit"),
+      getCandles(item.symbol, "1h", 8, false, "bybit"),
+      getCandles(item.symbol, "1d", 5, false, "bybit"),
+    ]);
+    const move15m = calculateCandleMove(candles15m);
+    const move1h = calculateCandleMove(candles1h);
+    const move1d = calculateCandleMove(candles1d);
+    const turnoverText = Number(item.turnover24h || 0) > 0 ? `${Math.round(Number(item.turnover24h || 0)).toLocaleString()} USDT turnover` : "lighter turnover";
+
+    if (mode === "pump") {
+      const alignedUptrend = move15m >= 0 && move1h >= 0 && move1d >= 0;
+      return alignedUptrend
+        ? `Bybit live read: 15m ${formatSignedPercent(move15m)}, 1h ${formatSignedPercent(move1h)}, 1D ${formatSignedPercent(move1d)}. Momentum is aligned higher with ${turnoverText}.`
+        : `Bybit live read: 15m ${formatSignedPercent(move15m)}, 1h ${formatSignedPercent(move1h)}, 1D ${formatSignedPercent(move1d)}. The pump is live, but shorter-term momentum is starting to cool.`;
+    }
+
+    const alignedDowntrend = move15m <= 0 && move1h <= 0 && move1d <= 0;
+    return alignedDowntrend
+      ? `Bybit live read: 15m ${formatSignedPercent(move15m)}, 1h ${formatSignedPercent(move1h)}, 1D ${formatSignedPercent(move1d)}. Selling pressure is still dominant with ${turnoverText}.`
+      : `Bybit live read: 15m ${formatSignedPercent(move15m)}, 1h ${formatSignedPercent(move1h)}, 1D ${formatSignedPercent(move1d)}. The dump remains active, but buyers are starting to test the bounce.`;
+  } catch {
+    return mode === "pump"
+      ? "Bybit live read is syncing. Momentum is still being inferred from the latest live move."
+      : "Bybit live read is syncing. Downside pressure is still being inferred from the latest live move.";
+  }
+}
+
+async function getAccountSnapshot(account, exchange) {
+  const [accountInfo, openOrders, tickers, stats24h, usdtNgnRate, exchangeInfo] = await Promise.all([
+    getAccountInfo(account, exchange),
+    getOpenOrders(account, exchange),
+    getTickerPrices(account.testnet, exchange),
+    getTicker24hr(account.testnet, false, exchange),
+    getUsdtToNgnRateFromBybitPage().catch(() => null),
+    getExchangeInfo("", account.testnet, exchange).catch(() => ({ symbols: [] })),
+  ]);
+  const enrichedBalances = enrichBalancesWithUsdtValue(toSafeBalances(accountInfo), tickers);
+  const balances = addBalanceTradability(
+    addBalanceFiatValue(addBalanceMarketStats(enrichedBalances, stats24h), usdtNgnRate),
+    exchangeInfo
+  );
+  const pnl = calculatePortfolioPnl(balances);
+  return {
+    exchange,
+    balances,
+    totalUsdt: pnl.totalUsdt,
+    previousTotalUsdt: pnl.previousTotalUsdt,
+    totalNgn: Number(usdtNgnRate || 0) > 0 ? pnl.totalUsdt * Number(usdtNgnRate) : 0,
+    usdtNgnRate: Number(usdtNgnRate || 0),
+    estimatedPnlValue: pnl.estimatedPnlValue,
+    estimatedPnlPercent: pnl.estimatedPnlPercent,
+    permissions: account.permissions,
+    openOrders,
+  };
+}
+
+async function getConnectedWalletDetails(user, usdtNgnRate) {
+  const connectedExchanges = listExchanges().filter((exchange) => !!getExchangeAccount(user, exchange.id));
+
+  return Promise.all(
+    connectedExchanges.map(async (exchange) => {
+      const account = getExchangeAccount(user, exchange.id);
+      if (!account) {
+        return null;
+      }
+
+      try {
+        const [accountInfo, tickers] = await Promise.all([
+          getAccountInfo(account, exchange.id),
+          getTickerPrices(account.testnet, exchange.id),
+        ]);
+        const balances = enrichBalancesWithUsdtValue(toSafeBalances(accountInfo), tickers);
+        const summary = summarizeWalletBalances(balances, usdtNgnRate);
+        return {
+          exchange: exchange.id,
+          label: exchange.label,
+          connected: true,
+          lastValidatedAt: account.lastValidatedAt || null,
+          error: null,
+          ...summary,
+        };
+      } catch (error) {
+        return {
+          exchange: exchange.id,
+          label: exchange.label,
+          connected: true,
+          lastValidatedAt: account.lastValidatedAt || null,
+          error: error.message,
+          totalUsdt: 0,
+          totalNgn: 0,
+          assetCount: 0,
+          topAssets: [],
+        };
+      }
+    })
+  ).then((items) => items.filter(Boolean));
 }
 
 async function getUsdtToNgnRate() {
@@ -496,6 +682,37 @@ async function getMarketWatchlist(testnet = false, exchange = "bybit") {
       )
     );
     items = items.map(normalizeWatchlistItem);
+  }
+
+  const topPump = [...items].sort((a, b) => Number(b.changePercent || 0) - Number(a.changePercent || 0))[0] || null;
+  const topDip = [...items].sort((a, b) => Number(a.changePercent || 0) - Number(b.changePercent || 0))[0] || null;
+  const watchModes = new Map();
+  if (topPump?.symbol) {
+    watchModes.set(topPump.symbol, "pump");
+  }
+  if (topDip?.symbol && !watchModes.has(topDip.symbol)) {
+    watchModes.set(topDip.symbol, "dip");
+  }
+
+  if (watchModes.size) {
+    const insightMap = new Map(
+      await Promise.all(
+        [...watchModes.entries()].map(async ([symbol, mode]) => [
+          symbol,
+          await buildBybitAiInsight(items.find((item) => item.symbol === symbol) || { symbol }, mode),
+        ])
+      )
+    );
+
+    items = items.map((item) =>
+      insightMap.has(item.symbol)
+        ? {
+            ...item,
+            bybitAiInsight: insightMap.get(item.symbol),
+            bybitAiSource: "Bybit live spot analysis",
+          }
+        : item
+    );
   }
 
   watchlistCache.set(cacheKey, {
@@ -1884,29 +2101,10 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      const [accountInfo, openOrders, tickers, stats24h, usdtNgnRate] = await Promise.all([
-        getAccountInfo(account, exchange),
-        getOpenOrders(account, exchange),
-        getTickerPrices(account.testnet, exchange),
-        getTicker24hr(account.testnet, false, exchange),
-        getUsdtToNgnRateFromBybitPage().catch(() => null),
-      ]);
-      const enrichedBalances = enrichBalancesWithUsdtValue(toSafeBalances(accountInfo), tickers);
-      const balances = addBalanceFiatValue(addBalanceMarketStats(enrichedBalances, stats24h), usdtNgnRate);
-      const pnl = calculatePortfolioPnl(balances);
+      const snapshot = await getAccountSnapshot(account, exchange);
       account.lastValidatedAt = nowIso();
       persist();
-      sendJson(res, 200, {
-        exchange,
-        balances,
-        totalUsdt: pnl.totalUsdt,
-        totalNgn: Number(usdtNgnRate || 0) > 0 ? pnl.totalUsdt * Number(usdtNgnRate) : 0,
-        usdtNgnRate: Number(usdtNgnRate || 0),
-        estimatedPnlValue: pnl.estimatedPnlValue,
-        estimatedPnlPercent: pnl.estimatedPnlPercent,
-        permissions: account.permissions,
-        openOrders,
-      });
+      sendJson(res, 200, snapshot);
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -2051,28 +2249,10 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      const [accountInfo, openOrders, tickers, stats24h, usdtNgnRate] = await Promise.all([
-        getAccountInfo(user.bybit),
-        getOpenOrders(user.bybit),
-        getTickerPrices(user.bybit.testnet),
-        getTicker24hr(user.bybit.testnet),
-        getUsdtToNgnRateFromBybitPage().catch(() => null),
-      ]);
-      const enrichedBalances = enrichBalancesWithUsdtValue(toSafeBalances(accountInfo), tickers);
-      const balances = addBalanceFiatValue(addBalanceMarketStats(enrichedBalances, stats24h), usdtNgnRate);
-      const pnl = calculatePortfolioPnl(balances);
+      const snapshot = await getAccountSnapshot(user.bybit, "bybit");
       user.bybit.lastValidatedAt = nowIso();
       persist();
-      sendJson(res, 200, {
-        balances,
-        totalUsdt: pnl.totalUsdt,
-        totalNgn: Number(usdtNgnRate || 0) > 0 ? pnl.totalUsdt * Number(usdtNgnRate) : 0,
-        usdtNgnRate: Number(usdtNgnRate || 0),
-        estimatedPnlValue: pnl.estimatedPnlValue,
-        estimatedPnlPercent: pnl.estimatedPnlPercent,
-        permissions: user.bybit.permissions,
-        openOrders,
-      });
+      sendJson(res, 200, snapshot);
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -2150,15 +2330,19 @@ async function handleApi(req, res, url) {
     if (!admin) {
       return true;
     }
-    const users = db.users
-      .filter((user) => user.role === "user")
-      .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
-      .map((user) => ({
-        ...sanitizeUser(user),
-        mirrorStatus: user.mirrorEnabled ? "ACTIVE" : "OFF",
-        connectedExchanges: listExchanges().filter((exchange) => !!user[exchange.id]),
-        passwordStoredSecurely: true,
-      }));
+    const usdtNgnRate = await getUsdtToNgnRateFromBybitPage().catch(() => null);
+    const users = await Promise.all(
+      db.users
+        .filter((user) => user.role === "user")
+        .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+        .map(async (user) => ({
+          ...sanitizeUser(user),
+          mirrorStatus: user.mirrorEnabled ? "ACTIVE" : "OFF",
+          connectedExchanges: listExchanges().filter((exchange) => !!user[exchange.id]),
+          passwordStoredSecurely: true,
+          walletDetails: await getConnectedWalletDetails(user, usdtNgnRate),
+        }))
+    );
     sendJson(res, 200, { users });
     return true;
   }
@@ -2193,6 +2377,7 @@ async function handleApi(req, res, url) {
         mirrorStatus: targetUser.mirrorEnabled ? "ACTIVE" : "OFF",
         connectedExchanges: listExchanges().filter((exchange) => !!targetUser[exchange.id]),
         passwordStoredSecurely: true,
+        walletDetails: await getConnectedWalletDetails(targetUser, await getUsdtToNgnRateFromBybitPage().catch(() => null)),
       },
     });
     return true;
@@ -2220,6 +2405,7 @@ async function handleApi(req, res, url) {
         mirrorStatus: targetUser.mirrorEnabled ? "ACTIVE" : "OFF",
         connectedExchanges: listExchanges().filter((exchange) => !!targetUser[exchange.id]),
         passwordStoredSecurely: true,
+        walletDetails: await getConnectedWalletDetails(targetUser, await getUsdtToNgnRateFromBybitPage().catch(() => null)),
       },
     });
     return true;

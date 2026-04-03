@@ -16,6 +16,11 @@ const WATCHLIST_REFRESH_INTERVAL_MS = 15000;
 const TRADE_REFRESH_INTERVAL_MS = 10000;
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
 const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
+const SIGNAL_INTERVAL_OPTIONS = ["15m", "1h", "1D"];
+const SIGNAL_CHART_TYPES = [
+  { id: "candles", label: "Candles" },
+  { id: "line", label: "Line" },
+];
 
 const state = {
   user: null,
@@ -35,6 +40,7 @@ const state = {
   trades: [],
   users: [],
   totalUsdt: 0,
+  previousTotalUsdt: 0,
   totalNgn: 0,
   usdtNgnRate: 0,
   estimatedPnlValue: 0,
@@ -47,7 +53,9 @@ const state = {
   signalChart: {
     symbol: "",
     interval: "15m",
+    chartType: "candles",
     candles: [],
+    guidePrice: null,
     loading: false,
   },
   liveMap: {},
@@ -315,7 +323,12 @@ function getDetectedSpotHoldings() {
   const stableAssets = new Set(["USDT", "USDC", "FDUSD", "BUSD"]);
 
   return (state.balances || [])
-    .filter((balance) => Number(balance.total || 0) > 0 && !stableAssets.has(String(balance.asset || "").toUpperCase()))
+    .filter(
+      (balance) =>
+        Number(balance.total || 0) > 0 &&
+        !!balance.spotSellTradable &&
+        !stableAssets.has(String(balance.asset || "").toUpperCase())
+    )
     .map((balance) => {
       const symbol = `${String(balance.asset || "").toUpperCase()}USDT`;
       const total = Number(balance.total || 0);
@@ -385,10 +398,17 @@ function hasActiveOpenOrderForSymbol(symbol) {
 function hasExchangeBalanceForTrade(trade) {
   const baseAsset = getBaseAssetFromSymbol(trade.symbol);
   const balance = getBalanceForAsset(baseAsset);
-  const totalBalance =
-    balance && balance.total !== undefined
-      ? Number(balance.total || 0)
-      : Number(balance?.free || 0) + Number(balance?.locked || 0);
+  if (!balance) {
+    return false;
+  }
+
+  if (balance.spotSellTradable !== undefined) {
+    return !!balance.spotSellTradable;
+  }
+
+  const totalBalance = balance.total !== undefined
+    ? Number(balance.total || 0)
+    : Number(balance?.free || 0) + Number(balance?.locked || 0);
   return totalBalance > 0;
 }
 
@@ -452,6 +472,14 @@ function getNetrueBalanceValue() {
   return 250;
 }
 
+function getInvestmentBalanceNgn() {
+  return Number(state.totalNgn || 0);
+}
+
+function getInvestmentDailyReturnNgn() {
+  return getInvestmentBalanceNgn() * 0.015;
+}
+
 function getTradeEntryPrice(trade) {
   return Number(
     trade.price ||
@@ -492,6 +520,111 @@ function buildSparklinePath(values, width, height, padding = 8) {
       return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
     })
     .join(" ");
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getSignalChartGeometry(candles, width = 320, height = 180) {
+  const padding = { top: 12, right: 12, bottom: 14, left: 12 };
+  const usableWidth = width - padding.left - padding.right;
+  const usableHeight = height - padding.top - padding.bottom;
+  const highs = candles.map((item) => Number(item.high || item.close || 0)).filter((value) => Number.isFinite(value));
+  const lows = candles.map((item) => Number(item.low || item.close || 0)).filter((value) => Number.isFinite(value));
+  const minPrice = lows.length ? Math.min(...lows) : 0;
+  const maxPrice = highs.length ? Math.max(...highs) : 0;
+  const range = maxPrice - minPrice || Math.max(maxPrice * 0.02, 1);
+  const paddedMin = minPrice - range * 0.08;
+  const paddedMax = maxPrice + range * 0.08;
+  const chartRange = paddedMax - paddedMin || 1;
+  const candleStep = usableWidth / Math.max(candles.length, 1);
+  const candleBodyWidth = Math.max(Math.min(candleStep * 0.56, 10), 3);
+  const toX = (index) => padding.left + candleStep * index + candleStep / 2;
+  const toY = (price) =>
+    padding.top + usableHeight - ((Number(price || 0) - paddedMin) / chartRange) * usableHeight;
+
+  return {
+    width,
+    height,
+    padding,
+    usableWidth,
+    usableHeight,
+    minPrice: paddedMin,
+    maxPrice: paddedMax,
+    candleStep,
+    candleBodyWidth,
+    toX,
+    toY,
+  };
+}
+
+function buildSignalLinePath(candles, geometry) {
+  if (!candles.length) {
+    return "";
+  }
+
+  return candles
+    .map((candle, index) => {
+      const x = geometry.toX(index);
+      const y = geometry.toY(candle.close || 0);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function buildSignalCandleMarkup(candles, geometry) {
+  return candles
+    .map((candle, index) => {
+      const open = Number(candle.open || 0);
+      const close = Number(candle.close || 0);
+      const high = Number(candle.high || close || open || 0);
+      const low = Number(candle.low || close || open || 0);
+      const x = geometry.toX(index);
+      const wickTop = geometry.toY(high);
+      const wickBottom = geometry.toY(low);
+      const bodyTop = geometry.toY(Math.max(open, close));
+      const bodyBottom = geometry.toY(Math.min(open, close));
+      const bodyHeight = Math.max(bodyBottom - bodyTop, 1.5);
+      const className = close >= open ? "positive" : "negative";
+      return `
+        <g class="signal-candle ${className}">
+          <line x1="${x.toFixed(2)}" y1="${wickTop.toFixed(2)}" x2="${x.toFixed(2)}" y2="${wickBottom.toFixed(2)}" class="signal-candle-wick"></line>
+          <rect
+            x="${(x - geometry.candleBodyWidth / 2).toFixed(2)}"
+            y="${Math.min(bodyTop, bodyBottom).toFixed(2)}"
+            width="${geometry.candleBodyWidth.toFixed(2)}"
+            height="${bodyHeight.toFixed(2)}"
+            rx="1.5"
+            class="signal-candle-body"
+          ></rect>
+        </g>
+      `;
+    })
+    .join("");
+}
+
+function getSignalChartSummary(candles) {
+  const first = candles[0] || null;
+  const last = candles[candles.length - 1] || null;
+  const highs = candles.map((item) => Number(item.high || 0)).filter((value) => Number.isFinite(value) && value > 0);
+  const lows = candles.map((item) => Number(item.low || 0)).filter((value) => Number.isFinite(value) && value > 0);
+  const currentPrice = Number(last?.close || 0);
+  const openingPrice = Number(first?.open || first?.close || 0);
+  return {
+    currentPrice,
+    highPrice: highs.length ? Math.max(...highs) : currentPrice,
+    lowPrice: lows.length ? Math.min(...lows) : currentPrice,
+    movePercent: openingPrice && currentPrice ? ((currentPrice - openingPrice) / openingPrice) * 100 : 0,
+  };
+}
+
+function getSignalGuidePrice(candles) {
+  const currentGuide = Number(state.signalChart.guidePrice || 0);
+  if (currentGuide > 0) {
+    return currentGuide;
+  }
+  return Number(candles[candles.length - 1]?.close || 0);
 }
 
 function getTradePnlPercent(trade) {
@@ -1071,6 +1204,7 @@ function refreshSignalChartDom() {
   if (host) {
     host.innerHTML = renderSignalChartSection();
   }
+  bindSignalChartActions();
 }
 
 async function loadSignalChart(symbol, options = {}) {
@@ -1089,11 +1223,17 @@ async function loadSignalChart(symbol, options = {}) {
   }
 
   try {
-    const payload = await api(`/api/market/chart?symbol=${encodeURIComponent(nextSymbol)}&interval=${encodeURIComponent(state.signalChart.interval || "15m")}&limit=48`);
+    const payload = await api(
+      `/api/market/chart?symbol=${encodeURIComponent(nextSymbol)}&interval=${encodeURIComponent(
+        state.signalChart.interval || "15m"
+      )}&limit=48`
+    );
+    const nextCandles = payload.candles || [];
     state.signalChart = {
       ...state.signalChart,
       symbol: nextSymbol,
-      candles: payload.candles || [],
+      candles: nextCandles,
+      guidePrice: Number(state.signalChart.guidePrice || 0) > 0 ? Number(state.signalChart.guidePrice) : getSignalGuidePrice(nextCandles),
       loading: false,
     };
   } catch {
@@ -1101,6 +1241,7 @@ async function loadSignalChart(symbol, options = {}) {
       ...state.signalChart,
       symbol: nextSymbol,
       candles: [],
+      guidePrice: null,
       loading: false,
     };
   }
@@ -1114,6 +1255,107 @@ function bindSignalCardActions() {
       void loadSignalChart(button.dataset.signalSymbol);
     };
   });
+}
+
+function updateSignalGuideLine(price) {
+  const chart = document.querySelector("[data-signal-chart-svg]");
+  const line = document.querySelector("[data-signal-guide-line]");
+  const pill = document.querySelector("[data-signal-guide-pill]");
+  const current = document.querySelector("[data-signal-guide-price]");
+  const guideChip = document.querySelector("[data-signal-guide-current]");
+  const candles = state.signalChart.candles || [];
+  if (!chart || !line || !pill || !current || !guideChip || !candles.length) {
+    return;
+  }
+
+  const geometry = getSignalChartGeometry(candles);
+  const clampedPrice = clampNumber(Number(price || 0), geometry.minPrice, geometry.maxPrice);
+  const y = geometry.toY(clampedPrice);
+  line.setAttribute("y1", y.toFixed(2));
+  line.setAttribute("y2", y.toFixed(2));
+  pill.setAttribute("y", Math.max(y - 10, 8).toFixed(2));
+  current.textContent = formatNumber(clampedPrice, 8);
+  guideChip.textContent = formatNumber(clampedPrice, 8);
+  state.signalChart = {
+    ...state.signalChart,
+    guidePrice: clampedPrice,
+  };
+}
+
+function bindSignalChartActions() {
+  document.querySelectorAll("[data-signal-interval]").forEach((button) => {
+    button.onclick = () => {
+      const interval = button.dataset.signalInterval;
+      if (!interval || interval === state.signalChart.interval) {
+        return;
+      }
+      state.signalChart = {
+        ...state.signalChart,
+        interval,
+      };
+      refreshSignalChartDom();
+      const symbol = getSelectedSignalSymbol();
+      if (symbol) {
+        void loadSignalChart(symbol);
+      }
+    };
+  });
+
+  document.querySelectorAll("[data-signal-chart-type]").forEach((button) => {
+    button.onclick = () => {
+      const chartType = button.dataset.signalChartType;
+      if (!chartType || chartType === state.signalChart.chartType) {
+        return;
+      }
+      state.signalChart = {
+        ...state.signalChart,
+        chartType,
+      };
+      refreshSignalChartDom();
+    };
+  });
+
+  const surface = document.querySelector("[data-signal-drag-surface]");
+  const svg = document.querySelector("[data-signal-chart-svg]");
+  if (!surface || !svg || !(state.signalChart.candles || []).length) {
+    return;
+  }
+
+  const updateFromPointer = (clientY) => {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.height) {
+      return;
+    }
+    const geometry = getSignalChartGeometry(state.signalChart.candles || []);
+    const relativeY = clampNumber(((clientY - rect.top) / rect.height) * geometry.height, geometry.padding.top, geometry.height - geometry.padding.bottom);
+    const priceRatio = 1 - (relativeY - geometry.padding.top) / geometry.usableHeight;
+    const price = geometry.minPrice + priceRatio * (geometry.maxPrice - geometry.minPrice);
+    updateSignalGuideLine(price);
+  };
+
+  surface.onpointerdown = (event) => {
+    event.preventDefault();
+    surface.dataset.dragging = "true";
+    if (surface.setPointerCapture) {
+      surface.setPointerCapture(event.pointerId);
+    }
+    updateFromPointer(event.clientY);
+  };
+
+  surface.onpointermove = (event) => {
+    if (surface.dataset.dragging !== "true") {
+      return;
+    }
+    updateFromPointer(event.clientY);
+  };
+
+  const stopDragging = () => {
+    delete surface.dataset.dragging;
+  };
+
+  surface.onpointerup = stopDragging;
+  surface.onpointercancel = stopDragging;
+  surface.onpointerleave = stopDragging;
 }
 
 function refreshTradeDom() {
@@ -1299,6 +1541,8 @@ async function loadWatchlistSeed() {
       price: Number(item.price || 0),
       volume24h: Number(item.volume24h || 0),
       turnover24h: Number(item.turnover24h || 0),
+      bybitAiInsight: item.bybitAiInsight || "",
+      bybitAiSource: item.bybitAiSource || "",
     }));
   } catch {
     state.watchlistSeed = [];
@@ -1378,6 +1622,7 @@ function applyAccountSnapshot(account) {
     state.balances = account.balances || [];
     state.openOrders = account.openOrders || [];
     state.totalUsdt = Number(account.totalUsdt || 0);
+    state.previousTotalUsdt = Number(account.previousTotalUsdt || 0);
     state.totalNgn = Number(account.totalNgn || 0);
     state.usdtNgnRate = Number(account.usdtNgnRate || 0);
     state.estimatedPnlValue = Number(account.estimatedPnlValue || 0);
@@ -1388,6 +1633,7 @@ function applyAccountSnapshot(account) {
   state.balances = [];
   state.openOrders = [];
   state.totalUsdt = 0;
+  state.previousTotalUsdt = 0;
   state.totalNgn = 0;
   state.usdtNgnRate = 0;
   state.estimatedPnlValue = 0;
@@ -1631,8 +1877,10 @@ function renderBottomNav() {
 }
 
 function renderSummaryCard() {
-  const nairaBalance = Number(state.totalNgn || 0);
-  const nairaRate = Number(state.usdtNgnRate || 0);
+  const portfolioBalance = Number(state.totalUsdt || 0);
+  const previousPortfolioBalance = Number(state.previousTotalUsdt || 0);
+  const investmentBalance = getInvestmentBalanceNgn();
+  const investmentDailyReturn = getInvestmentDailyReturnNgn();
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const chips =
@@ -1653,10 +1901,11 @@ function renderSummaryCard() {
         <article class="summary-hero balance-slide">
           ${accountLoading ? renderSectionLoadingOverlay("Loading balances", `Syncing your ${exchangeLabel} balance cards`) : ""}
           <div>
-            <p class="eyebrow light">Spot Balance</p>
-            <h2>${formatUsdt(state.totalUsdt)}</h2>
-            <p class="muted-bright">Live portfolio value from your connected ${exchangeLabel} spot wallet.</p>
-            <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h market move ${state.estimatedPnlValue >= 0 ? "+" : ""}${formatUsdt(state.estimatedPnlValue)} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
+            <p class="eyebrow light">App Balance</p>
+            <h2>${formatUsdt(portfolioBalance)}</h2>
+            <p class="muted-bright">Live app balance from your connected ${exchangeLabel} spot wallet.</p>
+            <p class="summary-subline ${state.estimatedPnlPercent >= 0 ? "positive" : "negative"}">24h balance ${state.estimatedPnlValue >= 0 ? "gain" : "loss"} ${state.estimatedPnlValue >= 0 ? "+" : "-"}${formatUsdt(Math.abs(state.estimatedPnlValue))} (${state.estimatedPnlPercent >= 0 ? "+" : ""}${formatNumber(state.estimatedPnlPercent, 2)}%)</p>
+            <p class="muted-bright">Previous 24h balance ${previousPortfolioBalance > 0 ? formatUsdt(previousPortfolioBalance) : "--"}</p>
           </div>
           <div class="hero-chip-row">
             ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
@@ -1667,14 +1916,12 @@ function renderSummaryCard() {
           </div>
         </article>
         <article class="summary-hero balance-slide netrue-card">
-          ${accountLoading ? renderSectionLoadingOverlay("Loading NGN view", "Pulling the latest fiat conversion") : ""}
+          ${accountLoading ? renderSectionLoadingOverlay("Loading investment view", "Pulling the latest NGN investment balance") : ""}
           <div>
-            <p class="eyebrow light">Naira Balance</p>
-            <h2>${nairaBalance > 0 ? formatNaira(nairaBalance) : "--"}</h2>
-            <p class="muted-bright">
-              ${nairaRate > 0 ? `${exchangeLabel} fiat rate 1 USDT = ${formatNaira(nairaRate)}` : `${exchangeLabel} fiat rate unavailable right now.`}
-            </p>
-            <p class="muted-bright">Live portfolio value converted from your ${exchangeLabel} spot balance.</p>
+            <p class="eyebrow light">Investment Balance</p>
+            <h2>${investmentBalance > 0 ? formatNaira(investmentBalance) : "--"}</h2>
+            <p class="muted-bright">Daily return 1.5%: ${investmentDailyReturn > 0 ? formatNaira(investmentDailyReturn) : "--"} every 24 hours.</p>
+            <p class="muted-bright">Users will receive 1.5% daily on their saved money and can withdraw anytime.</p>
           </div>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">Deposit</button>
@@ -1773,8 +2020,8 @@ function renderBalancesSection() {
                 <div class="asset-values">
                   <strong>${formatUsdt(balance.usdtValue)}</strong>
                   <p class="muted-copy ${Number(balance.changePercent || 0) >= 0 ? "positive" : "negative"}">
-                    ${Number(balance.changePercent || 0) >= 0 ? "+" : ""}${formatNumber(balance.changePercent, 2)}%
-                    (${Number(balance.estimatedPnlValue || 0) >= 0 ? "+" : ""}${formatUsdt(balance.estimatedPnlValue)})
+                    24h PnL ${Number(balance.changePercent || 0) >= 0 ? "+" : ""}${formatNumber(balance.changePercent, 2)}%
+                    (${Number(balance.estimatedPnlValue || 0) >= 0 ? "+" : "-"}${formatUsdt(Math.abs(balance.estimatedPnlValue || 0))})
                   </p>
                 </div>
               </div>
@@ -1811,6 +2058,8 @@ function getAiRecommendations() {
       changePercent: Number(item.changePercent ?? item.priceChangePercent ?? 0),
       volume24h: Number(item.volume24h || 0),
       turnover24h: Number(item.turnover24h || 0),
+      bybitAiInsight: item.bybitAiInsight || "",
+      bybitAiSource: item.bybitAiSource || "",
     }))
     .filter((item) => item.price > 0);
   if (!list.length) {
@@ -1863,8 +2112,8 @@ function renderAiSignalCard() {
       ${state.loadingWatchlist ? renderSectionLoadingOverlay("Loading AI signals", "Reading market direction from live data") : ""}
       <div class="section-head">
         <div>
-          <h3>AI Market Pulse</h3>
-          <p class="muted-copy">Live read from the best gainer and best loser on ${getExchangeLabel(getActiveExchange())} spot.</p>
+          <h3>Bybit Market Pulse</h3>
+          <p class="muted-copy">Top pump and top dip with live Bybit analysis layered on the active spot market read.</p>
         </div>
       </div>
       <div class="ai-grid">
@@ -1872,13 +2121,13 @@ function renderAiSignalCard() {
           <p class="eyebrow">Top Pump</p>
           <h4>${topPump ? `<button class="signal-link" data-signal-symbol="${topPump.symbol}" type="button">${topPump.symbol}</button>` : "--"}</h4>
           <p class="muted-copy">${topPump ? `${formatNumber(topPump.changePercent, 2)}% move with ${formatUsdt(topPump.turnover24h)} turnover.` : "Waiting for market data."}</p>
-          <p class="muted-copy">${buildAiTradingHint(topPump, "pump")}</p>
+          <p class="muted-copy">${topPump?.bybitAiInsight || buildAiTradingHint(topPump, "pump")}</p>
         </div>
         <div class="ai-pick dip">
           <p class="eyebrow">Top Dip</p>
           <h4>${topDip ? `<button class="signal-link" data-signal-symbol="${topDip.symbol}" type="button">${topDip.symbol}</button>` : "--"}</h4>
           <p class="muted-copy">${topDip ? `${formatNumber(topDip.changePercent, 2)}% move with ${formatUsdt(topDip.turnover24h)} turnover.` : "Waiting for market data."}</p>
-          <p class="muted-copy">${buildAiTradingHint(topDip, "dip")}</p>
+          <p class="muted-copy">${topDip?.bybitAiInsight || buildAiTradingHint(topDip, "dip")}</p>
         </div>
       </div>
     </section>
@@ -1888,11 +2137,12 @@ function renderAiSignalCard() {
 function renderSignalChartSection() {
   const symbol = getSelectedSignalSymbol();
   const candles = state.signalChart.candles || [];
-  const closes = candles.map((item) => Number(item.close || 0)).filter((value) => Number.isFinite(value) && value > 0);
-  const path = closes.length ? buildSparklinePath(closes, 320, 160) : "";
-  const first = closes[0] || 0;
-  const last = closes[closes.length - 1] || 0;
-  const movePercent = first && last ? ((last - first) / first) * 100 : 0;
+  const geometry = candles.length ? getSignalChartGeometry(candles) : null;
+  const summary = candles.length ? getSignalChartSummary(candles) : null;
+  const guidePrice = geometry ? clampNumber(getSignalGuidePrice(candles), geometry.minPrice, geometry.maxPrice) : 0;
+  const guideY = geometry ? geometry.toY(guidePrice) : 0;
+  const linePath = geometry ? buildSignalLinePath(candles, geometry) : "";
+  const candleMarkup = geometry ? buildSignalCandleMarkup(candles, geometry) : "";
 
   return `
     <section class="mobile-card signal-chart-card${state.signalChart.loading ? " is-section-loading" : ""}">
@@ -1903,17 +2153,57 @@ function renderSignalChartSection() {
           <p class="muted-copy">${symbol ? `${symbol} ${state.signalChart.interval} live candles from ${getExchangeLabel(getActiveExchange())}.` : "Tap Top Pump or Top Dip to load a live chart."}</p>
         </div>
       </div>
+      <div class="signal-toolbar">
+        <div class="signal-segmented">
+          ${SIGNAL_INTERVAL_OPTIONS.map((interval) => `
+            <button class="signal-mini-btn ${state.signalChart.interval === interval ? "active" : ""}" data-signal-interval="${interval}" type="button">${interval}</button>
+          `).join("")}
+        </div>
+        <div class="signal-segmented">
+          ${SIGNAL_CHART_TYPES.map((chartType) => `
+            <button class="signal-mini-btn ${state.signalChart.chartType === chartType.id ? "active" : ""}" data-signal-chart-type="${chartType.id}" type="button">${chartType.label}</button>
+          `).join("")}
+        </div>
+      </div>
       ${
-        symbol && path
+        symbol && geometry
           ? `
             <div class="signal-chart-shell">
-              <svg viewBox="0 0 320 160" class="signal-chart" role="img" aria-label="${symbol} live chart">
-                <path d="${path}" class="signal-chart-line ${movePercent >= 0 ? "positive" : "negative"}"></path>
+              <svg viewBox="0 0 320 180" class="signal-chart" role="img" aria-label="${symbol} live chart" data-signal-chart-svg>
+                <rect x="0" y="0" width="320" height="180" rx="18" class="signal-chart-backdrop"></rect>
+                <line x1="${geometry.padding.left}" y1="${guideY.toFixed(2)}" x2="${(320 - geometry.padding.right).toFixed(2)}" y2="${guideY.toFixed(2)}" class="signal-guide-line" data-signal-guide-line></line>
+                ${
+                  state.signalChart.chartType === "line"
+                    ? `<path d="${linePath}" class="signal-chart-line ${Number(summary?.movePercent || 0) >= 0 ? "positive" : "negative"}"></path>`
+                    : candleMarkup
+                }
+                <rect x="0" y="0" width="320" height="180" rx="18" class="signal-drag-surface" data-signal-drag-surface></rect>
+                <rect x="228" y="${Math.max(guideY - 10, 8).toFixed(2)}" width="84" height="20" rx="10" class="signal-guide-pill" data-signal-guide-pill></rect>
+                <text x="270" y="${Math.max(guideY + 4, 22).toFixed(2)}" text-anchor="middle" class="signal-guide-text" data-signal-guide-price>${formatNumber(guidePrice, 8)}</text>
               </svg>
+              <div class="signal-price-grid">
+                <div class="signal-price-chip">
+                  <span>Last</span>
+                  <strong>${summary?.currentPrice ? formatNumber(summary.currentPrice, 8) : "--"}</strong>
+                </div>
+                <div class="signal-price-chip">
+                  <span>High</span>
+                  <strong>${summary?.highPrice ? formatNumber(summary.highPrice, 8) : "--"}</strong>
+                </div>
+                <div class="signal-price-chip">
+                  <span>Low</span>
+                  <strong>${summary?.lowPrice ? formatNumber(summary.lowPrice, 8) : "--"}</strong>
+                </div>
+                <div class="signal-price-chip">
+                  <span>Guide</span>
+                  <strong data-signal-guide-current>${guidePrice ? formatNumber(guidePrice, 8) : "--"}</strong>
+                </div>
+              </div>
               <div class="signal-chart-meta">
                 <strong>${symbol}</strong>
-                <p class="muted-copy">Last ${last ? formatNumber(last, 8) : "--"} | ${movePercent >= 0 ? "+" : ""}${formatNumber(movePercent, 2)}%</p>
+                <p class="muted-copy">Last ${summary?.currentPrice ? formatNumber(summary.currentPrice, 8) : "--"} | ${Number(summary?.movePercent || 0) >= 0 ? "+" : ""}${formatNumber(summary?.movePercent || 0, 2)}%</p>
               </div>
+              <p class="muted-copy signal-guide-copy">Drag the horizontal guide line to monitor any price level on the chart.</p>
             </div>
           `
           : `<p class="muted-copy">No chart loaded yet.</p>`
@@ -2161,6 +2451,7 @@ function renderAdminUserCard(user) {
         </div>
         <div class="trade-detail-lines">
           <p class="muted-copy">Connected exchanges: ${connectedExchanges.length ? connectedExchanges.map((exchange) => exchange.label).join(" and ") : "None yet"}</p>
+          ${renderWalletDetailsList(user.walletDetails || [], "This user's connected wallet balances will show here once they sync.")}
           <p class="muted-copy">Stored passwords are hashed securely, so the current password cannot be viewed. Use the reset field below to set a new one.</p>
           <label>
             New password
@@ -2178,6 +2469,80 @@ function renderAdminUserCard(user) {
         <p class="muted-copy">Disconnecting mirror stops future admin trades from syncing into this account. Existing exchange orders stay untouched until you manage them directly.</p>
       </div>
     </details>
+  `;
+}
+
+function renderWalletDetailsList(walletDetails, emptyCopy) {
+  if (!(walletDetails || []).length) {
+    return `<p class="muted-copy">${emptyCopy}</p>`;
+  }
+
+  return `
+    <div class="wallet-detail-list">
+      ${(walletDetails || [])
+        .map(
+          (wallet) => `
+            <div class="wallet-detail-card">
+              <div class="wallet-detail-head">
+                <strong>${wallet.label}</strong>
+                <span class="muted-copy">${wallet.error ? "Sync issue" : `${wallet.assetCount || 0} assets`}</span>
+              </div>
+              ${
+                wallet.error
+                  ? `<p class="muted-copy">${wallet.error}</p>`
+                  : `
+                    <p class="muted-copy">Wallet balance ${formatUsdt(wallet.totalUsdt || 0)}${Number(wallet.totalNgn || 0) > 0 ? ` | ${formatNaira(wallet.totalNgn || 0)}` : ""}</p>
+                    <p class="muted-copy">Top assets ${(wallet.topAssets || []).map((asset) => `${asset.asset} ${formatUsdt(asset.usdtValue || 0)}`).join(", ") || "None yet"}</p>
+                  `
+              }
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderCurrentUserWalletSummary() {
+  const activeExchange = getActiveExchange();
+  const activeExchangeLabel = getExchangeLabel(activeExchange);
+  const connectedWallets = (state.user?.exchangeAccounts ? EXCHANGE_OPTIONS : [])
+    .filter((exchange) => state.user?.exchangeAccounts?.[exchange.id])
+    .map((exchange) => {
+      if (exchange.id === activeExchange) {
+        return {
+          label: exchange.label,
+          totalUsdt: state.totalUsdt,
+          totalNgn: state.totalNgn,
+          assetCount: (state.balances || []).length,
+          topAssets: (state.balances || []).slice(0, 3),
+          error: null,
+        };
+      }
+
+      return {
+        label: exchange.label,
+        totalUsdt: 0,
+        totalNgn: 0,
+        assetCount: 0,
+        topAssets: [],
+        error: `Switch the active exchange to ${exchange.label} to load its live wallet balance here.`,
+      };
+    });
+
+  return `
+    <div class="asset-card">
+      <div>
+        <strong>${state.user.name}</strong>
+        <p class="muted-copy">${state.user.email}</p>
+        <p class="muted-copy">${renderExchangeBadge(activeExchange)}</p>
+      </div>
+      <div class="asset-values">
+        <strong>${state.user.exchangeConnected ? `${activeExchangeLabel} linked` : `No ${activeExchangeLabel} linked`}</strong>
+        <p class="muted-copy">${state.user.mirrorEnabled ? "Mirroring enabled" : "Mirroring disabled"}</p>
+      </div>
+    </div>
+    ${renderWalletDetailsList(connectedWallets, `Connect ${activeExchangeLabel} to load your wallet balance.`)}
   `;
 }
 
@@ -2260,19 +2625,7 @@ function renderSettingsPane() {
           ${
             state.user.role === "admin"
               ? state.users.map((user) => renderAdminUserCard(user)).join("") || `<p class="muted-copy">No users linked yet.</p>`
-              : `
-                <div class="asset-card">
-                  <div>
-                    <strong>${state.user.name}</strong>
-                    <p class="muted-copy">${state.user.email}</p>
-                    <p class="muted-copy">${renderExchangeBadge(activeExchange)}</p>
-                  </div>
-                  <div class="asset-values">
-                    <strong>${state.user.exchangeConnected ? `${activeExchangeLabel} linked` : `No ${activeExchangeLabel} linked`}</strong>
-                    <p class="muted-copy">${state.user.mirrorEnabled ? "Mirroring enabled" : "Mirroring disabled"}</p>
-                  </div>
-                </div>
-              `
+              : renderCurrentUserWalletSummary()
           }
         </div>
       </section>
@@ -2462,6 +2815,7 @@ function bindDashboardActions() {
   bindHistoryActions();
   bindAdminUserDisclosureToggles();
   bindSignalCardActions();
+  bindSignalChartActions();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -2627,6 +2981,7 @@ function bindDashboardActions() {
       state.trades = [];
       state.users = [];
       state.totalUsdt = 0;
+      state.previousTotalUsdt = 0;
       state.totalNgn = 0;
       state.usdtNgnRate = 0;
       state.estimatedPnlValue = 0;
@@ -2634,7 +2989,9 @@ function bindDashboardActions() {
       state.signalChart = {
         symbol: "",
         interval: "15m",
+        chartType: "candles",
         candles: [],
+        guidePrice: null,
         loading: false,
       };
       state.tradeMarketMap = {};

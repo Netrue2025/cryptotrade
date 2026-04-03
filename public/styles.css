@@ -542,6 +542,33 @@ button:active,
   position: relative;
 }
 
+.signal-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.signal-segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 8px;
+}
+
+.signal-mini-btn {
+  border: 0;
+  border-radius: 14px;
+  padding: 10px 12px;
+  font-weight: 800;
+  background: var(--soft-surface);
+  color: var(--muted);
+}
+
+.signal-mini-btn.active {
+  background: linear-gradient(135deg, #2f7df6, #1e66d2);
+  color: #fff;
+}
+
 .signal-chart-shell {
   display: grid;
   gap: 12px;
@@ -554,6 +581,10 @@ button:active,
   display: block;
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(47, 125, 246, 0.08), rgba(47, 125, 246, 0.02));
+}
+
+.signal-chart-backdrop {
+  fill: rgba(47, 125, 246, 0.05);
 }
 
 .signal-chart-line {
@@ -569,6 +600,69 @@ button:active,
 
 .signal-chart-line.negative {
   stroke: #ff4d6d;
+}
+
+.signal-candle-wick {
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.signal-candle.positive {
+  color: #16c47f;
+}
+
+.signal-candle.negative {
+  color: #ff4d6d;
+}
+
+.signal-candle-body {
+  fill: currentColor;
+}
+
+.signal-guide-line {
+  stroke: rgba(47, 125, 246, 0.82);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.signal-guide-pill {
+  fill: rgba(18, 26, 43, 0.88);
+}
+
+.signal-guide-text {
+  fill: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.signal-drag-surface {
+  fill: transparent;
+  cursor: ns-resize;
+}
+
+.signal-price-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.signal-price-chip {
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--soft-surface);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 4px;
+}
+
+.signal-price-chip span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.signal-guide-copy {
+  font-size: 0.85rem;
 }
 
 .signal-chart-meta {
@@ -892,6 +986,27 @@ body[data-theme="dark"] .section-loading-card {
 
 .admin-user-card {
   padding: 0;
+}
+
+.wallet-detail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.wallet-detail-card {
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: var(--soft-surface);
+  display: grid;
+  gap: 6px;
+}
+
+.wallet-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
 }
 
 .admin-user-actions {
