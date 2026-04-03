@@ -50,7 +50,10 @@ const state = {
   showAllWatchlist: false,
   expandedTradeIds: [],
   expandedPendingOrderIds: [],
+  expandedAdminUserIds: [],
   selectedHistoryTradeIds: [],
+  adminPasswordDrafts: {},
+  revealedAdminPasswordIds: [],
   settingsDraft: {
     apiKey: "",
     apiSecret: "",
@@ -291,6 +294,14 @@ function getDisplayedWatchlist() {
     return list;
   }
   return list.slice(0, 5);
+}
+
+function getConnectedExchanges(user) {
+  if (!user) {
+    return [];
+  }
+
+  return EXCHANGE_OPTIONS.filter((exchange) => user[`${exchange.id}Connected`]);
 }
 
 function getTradeSymbolSuggestions() {
@@ -823,7 +834,7 @@ function renderTopbarActions() {
   const topbar = document.querySelector(".topbar");
   document.body.dataset.appShell = state.user ? "dashboard" : "guest";
 
-  if (!state.user) {
+  if (state.user || state.showSplash) {
     if (topbar) {
       topbar.style.display = "none";
     }
@@ -840,7 +851,7 @@ function renderTopbarActions() {
       <div class="brand-icon star-icon">&#9733;</div>
       <div>
         <strong>TradeFlow</strong>
-        <p>${state.user ? `${state.user.role === "admin" ? "Admin Console" : "User Console"} | ${getExchangeLabel(getActiveExchange())}` : "Crypto Spot App"}</p>
+        <p>Binance and Bybit spot dashboard access</p>
       </div>
     </div>
   `;
@@ -1052,6 +1063,19 @@ function renderExchangeBadge(exchange) {
   return `<span class="exchange-badge exchange-${escapeHtml(exchange)}">${label}</span>`;
 }
 
+function renderExchangeBadgeList(exchanges) {
+  const badges = exchanges.map((exchange) => renderExchangeBadge(exchange.id || exchange)).join("");
+  return badges || `<span class="exchange-badge">No exchange</span>`;
+}
+
+function getAdminPasswordDraft(userId) {
+  return state.adminPasswordDrafts[userId] || "";
+}
+
+function updateUserInStateUsers(nextUser) {
+  state.users = state.users.map((user) => (user.id === nextUser.id ? { ...user, ...nextUser } : user));
+}
+
 async function refreshTradeStatusData() {
   if (!state.user) {
     return;
@@ -1156,7 +1180,13 @@ function stopTradeRefreshTimer() {
 async function loadWatchlistSeed() {
   try {
     const payload = await api("/api/market/watchlist");
-    state.watchlistSeed = payload.watchlist || [];
+    state.watchlistSeed = (payload.watchlist || []).map((item) => ({
+      ...item,
+      changePercent: Number(item.changePercent ?? item.priceChangePercent ?? 0),
+      price: Number(item.price || 0),
+      volume24h: Number(item.volume24h || 0),
+      turnover24h: Number(item.turnover24h || 0),
+    }));
   } catch {
     state.watchlistSeed = [];
   }
@@ -1168,7 +1198,7 @@ function hydrateWatchlistFromSeed() {
       item.symbol,
       {
         price: Number(item.price || 0),
-        changePercent: Number(item.changePercent || 0),
+        changePercent: Number(item.changePercent ?? item.priceChangePercent ?? 0),
         volume24h: Number(item.volume24h || 0),
         turnover24h: Number(item.turnover24h || 0),
       },
@@ -1303,6 +1333,9 @@ async function loadDashboardData() {
   state.users = usersPayload.users || [];
   state.loadingTrades = false;
   state.loadingUsers = false;
+  const adminUserIds = new Set(state.users.map((user) => user.id));
+  state.expandedAdminUserIds = state.expandedAdminUserIds.filter((id) => adminUserIds.has(id));
+  state.revealedAdminPasswordIds = state.revealedAdminPasswordIds.filter((id) => adminUserIds.has(id));
   syncHistorySelection();
   render();
   void refreshTradeMarketData();
@@ -1366,6 +1399,93 @@ function bindHistoryActions() {
       }).catch((error) => showError(error.message));
     });
   }
+}
+
+function bindAdminUserDisclosureToggles() {
+  document.querySelectorAll("[data-admin-user-id]").forEach((details) => {
+    details.ontoggle = () => {
+      const userId = details.dataset.adminUserId;
+      if (!userId) {
+        return;
+      }
+
+      if (details.open) {
+        if (!state.expandedAdminUserIds.includes(userId)) {
+          state.expandedAdminUserIds = [...state.expandedAdminUserIds, userId];
+        }
+        return;
+      }
+
+      state.expandedAdminUserIds = state.expandedAdminUserIds.filter((id) => id !== userId);
+    };
+  });
+}
+
+function setAdminPasswordDraft(userId, value) {
+  state.adminPasswordDrafts = {
+    ...state.adminPasswordDrafts,
+    [userId]: value,
+  };
+}
+
+function toggleAdminPasswordVisibility(userId) {
+  if (state.revealedAdminPasswordIds.includes(userId)) {
+    state.revealedAdminPasswordIds = state.revealedAdminPasswordIds.filter((id) => id !== userId);
+  } else {
+    state.revealedAdminPasswordIds = [...state.revealedAdminPasswordIds, userId];
+  }
+  render();
+}
+
+async function submitAdminPasswordReset(userId) {
+  const password = getAdminPasswordDraft(userId).trim();
+  if (!password) {
+    showError("Enter a new password for this user.");
+    return;
+  }
+
+  await withLoading(async () => {
+    const payload = await api(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+    updateUserInStateUsers(payload.user);
+    setAdminPasswordDraft(userId, "");
+    await loadDashboardData();
+    showNotice("User password updated");
+  }).catch((error) => showError(error.message));
+}
+
+async function updateAdminMirror(userId, enabled) {
+  await withLoading(async () => {
+    const payload = await api(`/api/admin/users/${encodeURIComponent(userId)}/mirror`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    updateUserInStateUsers(payload.user);
+    render();
+    showNotice(enabled ? "Mirror reconnected for user" : "Mirror disconnected for user");
+  }).catch((error) => showError(error.message));
+}
+
+async function deleteAdminUser(userId, name) {
+  if (!window.confirm(`Delete ${name}? This removes the user account and signs the user out everywhere.`)) {
+    return;
+  }
+
+  await withLoading(async () => {
+    await api(`/api/admin/users/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    });
+    state.users = state.users.filter((user) => user.id !== userId);
+    state.expandedAdminUserIds = state.expandedAdminUserIds.filter((id) => id !== userId);
+    const nextDrafts = { ...state.adminPasswordDrafts };
+    delete nextDrafts[userId];
+    state.adminPasswordDrafts = nextDrafts;
+    state.revealedAdminPasswordIds = state.revealedAdminPasswordIds.filter((id) => id !== userId);
+    await loadDashboardData();
+    showNotice("User deleted");
+  }).catch((error) => showError(error.message));
 }
 
 function renderBottomNav() {
@@ -1556,7 +1676,7 @@ function renderWatchlistSection() {
       <div class="section-head">
         <div>
           <h3>Live Crypto Watchlist</h3>
-          <p class="muted-copy">Streaming prices in USDT.</p>
+          <p class="muted-copy">Live price with true 24h move from ${getExchangeLabel(getActiveExchange())}.</p>
         </div>
         <button id="toggle-watchlist-btn" class="text-link" type="button">${state.showAllWatchlist ? "See less" : "See more"}</button>
       </div>
@@ -1566,18 +1686,24 @@ function renderWatchlistSection() {
 }
 
 function getAiRecommendations() {
-  const list = [...getWatchlist()].filter((item) => item.price > 0);
+  const list = [...(state.watchlistSeed || [])]
+    .map((item) => ({
+      symbol: item.symbol,
+      price: Number(item.price || 0),
+      changePercent: Number(item.changePercent ?? item.priceChangePercent ?? 0),
+      volume24h: Number(item.volume24h || 0),
+      turnover24h: Number(item.turnover24h || 0),
+    }))
+    .filter((item) => item.price > 0);
   if (!list.length) {
     return { topPump: null, topDip: null };
   }
 
-  const sortedByTurnover = [...list].sort((a, b) => Number(b.turnover24h || 0) - Number(a.turnover24h || 0));
-  const liquidUniverse = sortedByTurnover.slice(0, 12);
-  const topPump = [...liquidUniverse].sort((a, b) => {
+  const topPump = [...list].sort((a, b) => {
     const changeDiff = Number(b.changePercent || 0) - Number(a.changePercent || 0);
     return changeDiff || Number(b.turnover24h || 0) - Number(a.turnover24h || 0);
   })[0] || null;
-  const topDip = [...liquidUniverse].sort((a, b) => {
+  const topDip = [...list].sort((a, b) => {
     const changeDiff = Number(a.changePercent || 0) - Number(b.changePercent || 0);
     return changeDiff || Number(b.turnover24h || 0) - Number(a.turnover24h || 0);
   })[0] || null;
@@ -1620,7 +1746,7 @@ function renderAiSignalCard() {
       <div class="section-head">
         <div>
           <h3>AI Market Pulse</h3>
-          <p class="muted-copy">Live top pump and top dip from ${getExchangeLabel(getActiveExchange())} spot movers with strong turnover.</p>
+          <p class="muted-copy">Live read from the best gainer and best loser on ${getExchangeLabel(getActiveExchange())} spot.</p>
         </div>
       </div>
       <div class="ai-grid">
@@ -1802,6 +1928,61 @@ function renderOpenOrdersSection() {
   `;
 }
 
+function renderAdminUserCard(user) {
+  const isExpanded = state.expandedAdminUserIds.includes(user.id);
+  const connectedExchanges = getConnectedExchanges(user);
+  const revealPassword = state.revealedAdminPasswordIds.includes(user.id);
+  const passwordDraft = getAdminPasswordDraft(user.id);
+  return `
+    <details class="trade-disclosure admin-user-card" data-admin-user-id="${user.id}" ${isExpanded ? "open" : ""}>
+      <summary class="trade-summary-row">
+        <div>
+          <strong>${user.name}</strong>
+          <p class="muted-copy">${user.email}</p>
+          <div class="exchange-pill-row">${renderExchangeBadgeList(connectedExchanges)}</div>
+        </div>
+        <div class="asset-values">
+          <strong>${user.mirrorEnabled ? "Mirror active" : "Mirror disconnected"}</strong>
+          <p class="muted-copy">${user.exchangeConnected ? `${getExchangeLabel(user.activeExchange)} active` : "No active exchange linked"}</p>
+        </div>
+      </summary>
+      <div class="trade-disclosure-body">
+        <div class="trade-detail-grid">
+          <div class="trade-detail-pill">
+            <span>Mirror</span>
+            <strong>${user.mirrorEnabled ? "Connected" : "Disconnected"}</strong>
+          </div>
+          <div class="trade-detail-pill">
+            <span>Preferred</span>
+            <strong>${getExchangeLabel(user.activeExchange || "bybit")}</strong>
+          </div>
+          <div class="trade-detail-pill">
+            <span>Created</span>
+            <strong>${new Date(user.createdAt).toLocaleDateString()}</strong>
+          </div>
+        </div>
+        <div class="trade-detail-lines">
+          <p class="muted-copy">Connected exchanges: ${connectedExchanges.length ? connectedExchanges.map((exchange) => exchange.label).join(" and ") : "None yet"}</p>
+          <p class="muted-copy">Stored passwords are hashed securely, so the current password cannot be viewed. Use the reset field below to set a new one.</p>
+          <label>
+            New password
+            <input data-admin-password-input="${user.id}" type="${revealPassword ? "text" : "password"}" value="${escapeHtml(passwordDraft)}" placeholder="Set a new password" />
+          </label>
+        </div>
+        <div class="trade-actions-inline admin-user-actions">
+          <button class="micro-btn" data-admin-password-visibility="${user.id}" type="button">${revealPassword ? "Hide password" : "Show password"}</button>
+          <button class="micro-btn primary" data-admin-password-save="${user.id}" type="button">Update password</button>
+        </div>
+        <div class="trade-actions-inline admin-user-actions">
+          <button class="micro-btn ${user.mirrorEnabled ? "danger" : ""}" data-admin-toggle-mirror="${user.id}" data-admin-mirror-enabled="${user.mirrorEnabled ? "false" : "true"}" type="button">${user.mirrorEnabled ? "Disconnect mirror" : "Reconnect mirror"}</button>
+          <button class="micro-btn danger" data-admin-delete-user="${user.id}" data-admin-user-name="${escapeHtml(user.name)}" type="button">Delete user</button>
+        </div>
+        <p class="muted-copy">Disconnecting mirror stops future admin trades from syncing into this account. Existing exchange orders stay untouched until you manage them directly.</p>
+      </div>
+    </details>
+  `;
+}
+
 function renderSettingsPane() {
   const settingsDraft = state.settingsDraft || { apiKey: "", apiSecret: "", testnet: "false" };
   const activeExchange = getActiveExchange();
@@ -1868,30 +2049,14 @@ function renderSettingsPane() {
       <section class="mobile-card">
         <div class="section-head">
           <div>
-            <h3>${state.user.role === "admin" ? "Mirrored Users" : "Account Summary"}</h3>
-            <p class="muted-copy">${state.user.role === "admin" ? "Grouped here to keep the navigation simple." : "Your linked account and mirror status."}</p>
+            <h3>${state.user.role === "admin" ? "Registered Users" : "Account Summary"}</h3>
+            <p class="muted-copy">${state.user.role === "admin" ? "Open any user below to reset passwords, disconnect mirror trading, or remove the account." : "Your linked account and mirror status."}</p>
           </div>
         </div>
         <div class="card-list">
           ${
             state.user.role === "admin"
-              ? state.users
-                  .map(
-                    (user) => `
-                    <div class="asset-card">
-                      <div>
-                        <strong>${user.name}</strong>
-                        <p class="muted-copy">${user.email}</p>
-                        <p class="muted-copy">${renderExchangeBadge(user.activeExchange || "bybit")}</p>
-                      </div>
-                      <div class="asset-values">
-                        <strong>${user.exchangeConnected ? `${getExchangeLabel(user.activeExchange)} linked` : "No exchange linked"}</strong>
-                          <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"} | Bybit ${user.bybitConnected ? "on" : "off"} | Binance ${user.binanceConnected ? "on" : "off"}</p>
-                        </div>
-                      </div>
-                    `
-                  )
-                  .join("") || `<p class="muted-copy">No users linked yet.</p>`
+              ? state.users.map((user) => renderAdminUserCard(user)).join("") || `<p class="muted-copy">No users linked yet.</p>`
               : `
                 <div class="asset-card">
                   <div>
@@ -2091,6 +2256,7 @@ function renderDashboardShell() {
 
 function bindDashboardActions() {
   bindHistoryActions();
+  bindAdminUserDisclosureToggles();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -2263,12 +2429,45 @@ function bindDashboardActions() {
       state.tradeMarketMap = {};
       state.expandedTradeIds = [];
       state.expandedPendingOrderIds = [];
+      state.expandedAdminUserIds = [];
       state.selectedHistoryTradeIds = [];
+      state.adminPasswordDrafts = {};
+      state.revealedAdminPasswordIds = [];
       state.showSplash = false;
       tradeDraft = getTradeFormDefaults();
       render();
     });
   }
+
+  document.querySelectorAll("[data-admin-password-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      setAdminPasswordDraft(input.dataset.adminPasswordInput, input.value);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-password-visibility]").forEach((button) => {
+    button.addEventListener("click", () => {
+      toggleAdminPasswordVisibility(button.dataset.adminPasswordVisibility);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-password-save]").forEach((button) => {
+    button.addEventListener("click", () => {
+      submitAdminPasswordReset(button.dataset.adminPasswordSave);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-toggle-mirror]").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateAdminMirror(button.dataset.adminToggleMirror, button.dataset.adminMirrorEnabled === "true");
+    });
+  });
+
+  document.querySelectorAll("[data-admin-delete-user]").forEach((button) => {
+    button.addEventListener("click", () => {
+      deleteAdminUser(button.dataset.adminDeleteUser, button.dataset.adminUserName || "this user");
+    });
+  });
 }
 
 function updateTradeDraft(patch) {

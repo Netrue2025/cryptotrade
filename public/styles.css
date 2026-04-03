@@ -71,9 +71,17 @@ body {
 
 body[data-app-shell="guest"] .shell {
   min-height: 100vh;
-  padding: 0;
+  padding: 18px 0 28px;
+}
+
+body[data-app-shell="guest"] #app {
+  min-height: calc(100vh - 120px);
   display: grid;
   place-items: center;
+}
+
+body[data-app-shell="dashboard"] .topbar {
+  display: none;
 }
 
 button,
@@ -817,6 +825,22 @@ body[data-theme="dark"] .section-loading-card {
   gap: 8px;
 }
 
+.exchange-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.admin-user-card {
+  padding: 0;
+}
+
+.admin-user-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .trade-actions-stack {
   flex-direction: column;
   align-items: flex-end;
@@ -907,6 +931,8 @@ body[data-theme="dark"] .section-loading-card {
   font-size: 0.72rem;
   font-weight: 900;
   letter-spacing: 0.02em;
+  background: var(--soft-surface);
+  color: var(--muted);
 }
 
 .exchange-bybit {

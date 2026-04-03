@@ -46,10 +46,7 @@ const fiatRateCache = {
   updatedAt: 0,
 };
 
-const watchlistCache = {
-  items: null,
-  updatedAt: 0,
-};
+const watchlistCache = new Map();
 
 function persist() {
   saveDb(db);
@@ -86,6 +83,20 @@ function getExchangeLabel(exchange) {
 
 function setUserPreferredExchange(user, exchange) {
   user.preferredExchange = normalizeExchange(exchange, "bybit");
+}
+
+function getWatchlistCacheKey(testnet, exchange) {
+  return `${normalizeExchange(exchange, "bybit")}:${testnet ? "testnet" : "mainnet"}`;
+}
+
+function normalizeWatchlistItem(item) {
+  return {
+    symbol: String(item?.symbol || "").toUpperCase(),
+    price: Number(item?.price || 0),
+    changePercent: Number(item?.changePercent ?? item?.priceChangePercent ?? 0),
+    volume24h: Number(item?.volume24h || 0),
+    turnover24h: Number(item?.turnover24h || 0),
+  };
 }
 
 function getTradeExchange(trade) {
@@ -420,13 +431,10 @@ async function getUsdtToNgnRateFromBybitPage() {
 }
 
 async function getMarketWatchlist(testnet = false, exchange = "bybit") {
-  if (
-    !testnet &&
-    exchange === "bybit" &&
-    Array.isArray(watchlistCache.items) &&
-    Date.now() - watchlistCache.updatedAt < WATCHLIST_CACHE_TTL_MS
-  ) {
-    return watchlistCache.items;
+  const cacheKey = getWatchlistCacheKey(testnet, exchange);
+  const cached = watchlistCache.get(cacheKey);
+  if (cached && Date.now() - cached.updatedAt < WATCHLIST_CACHE_TTL_MS) {
+    return cached.items;
   }
 
   let items = [];
@@ -453,7 +461,10 @@ async function getMarketWatchlist(testnet = false, exchange = "bybit") {
       .map((symbol) => liquidUsdtPairs.find((item) => item.symbol === symbol))
       .filter(Boolean);
 
-    items = [...new Map([...topPump, ...topDip, ...anchors].map((item) => [item.symbol, item])).values()].slice(0, 12);
+    items = [...new Map([...topPump, ...topDip, ...anchors].map((item) => [item.symbol, item])).values()]
+      .map(normalizeWatchlistItem)
+      .filter((item) => item.symbol)
+      .slice(0, 12);
   } catch {
     items = [];
   }
@@ -470,14 +481,41 @@ async function getMarketWatchlist(testnet = false, exchange = "bybit") {
         }))
       )
     );
+    items = items.map(normalizeWatchlistItem);
   }
 
-  if (!testnet && exchange === "bybit") {
-    watchlistCache.items = items;
-    watchlistCache.updatedAt = Date.now();
-  }
+  watchlistCache.set(cacheKey, {
+    items,
+    updatedAt: Date.now(),
+  });
 
   return items;
+}
+
+function getAdminManagedUser(userId) {
+  return db.users.find((user) => user.id === userId && user.role === "user") || null;
+}
+
+function detachUserFromMirroring(userId) {
+  let changed = false;
+
+  for (const trade of db.tradeIntents) {
+    const nextMirrors = (trade.mirroredExecutions || []).filter((mirror) => mirror.userId !== userId);
+    if (nextMirrors.length !== (trade.mirroredExecutions || []).length) {
+      trade.mirroredExecutions = nextMirrors;
+      changed = true;
+    }
+
+    for (const exitOrder of trade.exitOrders || []) {
+      const nextExitMirrors = (exitOrder.mirroredExecutions || []).filter((mirror) => mirror.userId !== userId);
+      if (nextExitMirrors.length !== (exitOrder.mirroredExecutions || []).length) {
+        exitOrder.mirroredExecutions = nextExitMirrors;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
 }
 
 function sanitizeExecution(order, error) {
@@ -2071,11 +2109,98 @@ async function handleApi(req, res, url) {
     }
     const users = db.users
       .filter((user) => user.role === "user")
+      .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
       .map((user) => ({
         ...sanitizeUser(user),
         mirrorStatus: user.mirrorEnabled ? "ACTIVE" : "OFF",
+        connectedExchanges: listExchanges().filter((exchange) => !!user[exchange.id]),
+        passwordStoredSecurely: true,
       }));
     sendJson(res, 200, { users });
+    return true;
+  }
+
+  const adminPasswordMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/password$/);
+  if (req.method === "POST" && adminPasswordMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    const targetUser = getAdminManagedUser(decodeURIComponent(adminPasswordMatch[1] || "").trim());
+    if (!targetUser) {
+      sendJson(res, 404, { error: "User not found." });
+      return true;
+    }
+
+    const body = await readBody(req);
+    const password = String(body.password || "").trim();
+    if (password.length < 6) {
+      sendJson(res, 400, { error: "New password must be at least 6 characters long." });
+      return true;
+    }
+
+    const { salt, hash } = hashPassword(password);
+    targetUser.passwordSalt = salt;
+    targetUser.passwordHash = hash;
+    persist();
+    sendJson(res, 200, {
+      user: {
+        ...sanitizeUser(targetUser),
+        mirrorStatus: targetUser.mirrorEnabled ? "ACTIVE" : "OFF",
+        connectedExchanges: listExchanges().filter((exchange) => !!targetUser[exchange.id]),
+        passwordStoredSecurely: true,
+      },
+    });
+    return true;
+  }
+
+  const adminMirrorMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/mirror$/);
+  if (req.method === "POST" && adminMirrorMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    const targetUser = getAdminManagedUser(decodeURIComponent(adminMirrorMatch[1] || "").trim());
+    if (!targetUser) {
+      sendJson(res, 404, { error: "User not found." });
+      return true;
+    }
+
+    const body = await readBody(req);
+    targetUser.mirrorEnabled = !!body.enabled;
+    persist();
+    sendJson(res, 200, {
+      user: {
+        ...sanitizeUser(targetUser),
+        mirrorStatus: targetUser.mirrorEnabled ? "ACTIVE" : "OFF",
+        connectedExchanges: listExchanges().filter((exchange) => !!targetUser[exchange.id]),
+        passwordStoredSecurely: true,
+      },
+    });
+    return true;
+  }
+
+  const adminDeleteUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (req.method === "DELETE" && adminDeleteUserMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    const userId = decodeURIComponent(adminDeleteUserMatch[1] || "").trim();
+    const targetUser = getAdminManagedUser(userId);
+    if (!targetUser) {
+      sendJson(res, 404, { error: "User not found." });
+      return true;
+    }
+
+    detachUserFromMirroring(targetUser.id);
+    db.sessions = db.sessions.filter((session) => session.userId !== targetUser.id);
+    db.users = db.users.filter((user) => user.id !== targetUser.id);
+    persist();
+    sendJson(res, 200, { deletedUserId: targetUser.id });
     return true;
   }
 
