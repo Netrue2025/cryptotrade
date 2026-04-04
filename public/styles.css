@@ -13,6 +13,8 @@
   --accent-2: #16c47f;
   --danger: #ff4d6d;
   --danger-soft: rgba(255, 77, 109, 0.16);
+  --warning: #b96d0c;
+  --warning-soft: rgba(185, 109, 12, 0.14);
   --shadow: 0 18px 60px rgba(15, 23, 42, 0.12);
   --input-bg: rgba(255, 255, 255, 0.96);
   --soft-surface: #eef3fb;
@@ -52,6 +54,8 @@ body[data-theme="dark"] {
   --nav-active-bg: rgba(255, 255, 255, 0.14);
   --modal-bg: #151d2a;
   --contact-bg: linear-gradient(180deg, #182233, #131b29);
+  --warning: #f0a94a;
+  --warning-soft: rgba(240, 169, 74, 0.16);
 }
 
 * {
@@ -137,6 +141,10 @@ button {
 .muted-bright {
   margin: 0;
   color: rgba(255, 255, 255, 0.8);
+}
+
+.warning-copy {
+  color: var(--warning);
 }
 
 .landing-shell,
@@ -1019,6 +1027,42 @@ body[data-theme="dark"] .section-loading-card {
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+}
+
+.mirror-guide-card {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(185, 109, 12, 0.18);
+  background: linear-gradient(180deg, var(--warning-soft), var(--panel));
+  display: grid;
+  gap: 10px;
+}
+
+.mirror-guide-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.mirror-guide-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.mirror-guide-pill {
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  display: grid;
+  gap: 4px;
+}
+
+body[data-theme="dark"] .mirror-guide-pill {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .admin-user-actions {

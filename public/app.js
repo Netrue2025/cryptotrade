@@ -15,12 +15,25 @@ const EXCHANGE_OPTIONS = [
 const WATCHLIST_REFRESH_INTERVAL_MS = 15000;
 const TRADE_REFRESH_INTERVAL_MS = 10000;
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
+const STABLECOIN_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD"];
 const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
 const SIGNAL_INTERVAL_OPTIONS = ["15m", "1h", "1D"];
 const SIGNAL_CHART_TYPES = [
   { id: "candles", label: "Candles" },
   { id: "line", label: "Line" },
 ];
+const SPOT_MIRROR_GUIDANCE = {
+  bybit: {
+    referenceMinUsdt: 5,
+    ruleLabel: "minOrderAmt / minOrderQty",
+    copy: "Bybit checks the live symbol minimum amount and quantity before a mirror spot order is submitted.",
+  },
+  binance: {
+    referenceMinUsdt: 10,
+    ruleLabel: "MIN_NOTIONAL / NOTIONAL",
+    copy: "Binance checks the live symbol notional and lot-size filters before a mirror spot order is submitted.",
+  },
+};
 
 const state = {
   user: null,
@@ -334,6 +347,20 @@ function getConnectedExchanges(user) {
   }
 
   return EXCHANGE_OPTIONS.filter((exchange) => user[`${exchange.id}Connected`]);
+}
+
+function getSpotMirrorGuidance(exchange = getActiveExchange()) {
+  return SPOT_MIRROR_GUIDANCE[exchange] || SPOT_MIRROR_GUIDANCE.bybit;
+}
+
+function getStablecoinBuyingBalance(balances = []) {
+  return (balances || []).reduce((sum, balance) => {
+    const asset = String(balance.asset || "").toUpperCase();
+    if (!STABLECOIN_ASSETS.includes(asset)) {
+      return sum;
+    }
+    return sum + Number(balance.free ?? balance.total ?? 0);
+  }, 0);
 }
 
 function getDetectedSpotHoldings() {
@@ -2658,6 +2685,16 @@ function renderWalletDetailsList(walletDetails, emptyCopy) {
                   : `
                     <p class="muted-copy">Wallet balance ${formatUsdt(wallet.totalUsdt || 0)}${Number(wallet.totalNgn || 0) > 0 ? ` | ${formatNaira(wallet.totalNgn || 0)}` : ""}</p>
                     <p class="muted-copy">Top assets ${(wallet.topAssets || []).map((asset) => `${asset.asset} ${formatUsdt(asset.usdtValue || 0)}`).join(", ") || "None yet"}</p>
+                    ${
+                      Number(wallet.referenceMinTradeUsdt || 0) > 0
+                        ? `
+                          <p class="muted-copy ${wallet.belowReferenceMinTrade ? "warning-copy" : ""}">
+                            Mirror buy balance ${formatUsdtUnit(wallet.availableQuoteUsdt || 0)} stablecoin available. ${wallet.label} guide starts around ${formatUsdtUnit(wallet.referenceMinTradeUsdt || 0)} before symbol-level checks.
+                          </p>
+                          <p class="muted-copy">${wallet.minimumTradeNote || ""}</p>
+                        `
+                        : ""
+                    }
                   `
               }
             </div>
@@ -2668,9 +2705,52 @@ function renderWalletDetailsList(walletDetails, emptyCopy) {
   `;
 }
 
+function renderMirrorMinimumNotice() {
+  const activeExchange = getActiveExchange();
+  const activeExchangeLabel = getExchangeLabel(activeExchange);
+  const activeGuidance = getSpotMirrorGuidance(activeExchange);
+  const activeBalance = getStablecoinBuyingBalance(state.balances || []);
+  const hasActiveConnection = !!state.user?.exchangeAccounts?.[activeExchange];
+  let activeStatusCopy = `Connect ${activeExchangeLabel} to show a live mirror-buy balance check here.`;
+
+  if (hasActiveConnection) {
+    activeStatusCopy =
+      activeBalance < activeGuidance.referenceMinUsdt
+        ? `${activeExchangeLabel} stablecoin buying balance is ${formatUsdtUnit(activeBalance)}. That is below the ${formatUsdtUnit(activeGuidance.referenceMinUsdt)} guide, so mirror buys can be skipped when the symbol minimum is higher than your free balance.`
+        : `${activeExchangeLabel} stablecoin buying balance is ${formatUsdtUnit(activeBalance)}. That is above the ${formatUsdtUnit(activeGuidance.referenceMinUsdt)} guide, but the live symbol rule still decides whether each mirror order can be placed.`;
+  }
+
+  return `
+    <div class="mirror-guide-card">
+      <div class="mirror-guide-head">
+        <strong>Mirror Spot Minimums</strong>
+        <span class="muted-copy">Pair rules still win</span>
+      </div>
+      <p class="muted-copy ${hasActiveConnection && activeBalance < activeGuidance.referenceMinUsdt ? "warning-copy" : ""}">
+        ${activeStatusCopy}
+      </p>
+      <div class="mirror-guide-grid">
+        ${EXCHANGE_OPTIONS.map((exchange) => {
+          const guidance = getSpotMirrorGuidance(exchange.id);
+          return `
+            <div class="mirror-guide-pill">
+              <strong>${exchange.label}</strong>
+              <p class="muted-copy">Guide ${formatUsdtUnit(guidance.referenceMinUsdt)} for many USDT spot buys.</p>
+              <p class="muted-copy">Live rule: ${guidance.ruleLabel}</p>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      <p class="muted-copy">If your free quote balance or normalized quantity falls below the live exchange minimum for the symbol being mirrored, the app skips that mirror order instead of forcing a rejected spot trade.</p>
+    </div>
+  `;
+}
+
 function renderCurrentUserWalletSummary() {
   const activeExchange = getActiveExchange();
   const activeExchangeLabel = getExchangeLabel(activeExchange);
+  const activeGuidance = getSpotMirrorGuidance(activeExchange);
+  const activeStablecoinBalance = getStablecoinBuyingBalance(state.balances || []);
   const connectedWallets = (state.user?.exchangeAccounts ? EXCHANGE_OPTIONS : [])
     .filter((exchange) => state.user?.exchangeAccounts?.[exchange.id])
     .map((exchange) => {
@@ -2681,6 +2761,10 @@ function renderCurrentUserWalletSummary() {
           totalNgn: state.totalNgn,
           assetCount: (state.balances || []).length,
           topAssets: (state.balances || []).slice(0, 3),
+          availableQuoteUsdt: activeStablecoinBalance,
+          referenceMinTradeUsdt: activeGuidance.referenceMinUsdt,
+          minimumTradeNote: activeGuidance.copy,
+          belowReferenceMinTrade: activeStablecoinBalance < activeGuidance.referenceMinUsdt,
           error: null,
         };
       }
@@ -2775,6 +2859,7 @@ function renderSettingsPane() {
               </label>
               <button class="button-secondary shimmer-button" type="submit">Save preference</button>
             </form>
+            ${renderMirrorMinimumNotice()}
             `
             : ""
         }
