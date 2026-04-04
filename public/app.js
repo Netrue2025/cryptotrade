@@ -91,6 +91,18 @@ const topbarActions = document.getElementById("topbar-actions");
 let watchlistRefreshPromise = null;
 let tradeRefreshPromise = null;
 
+function normalizeUserPayload(user) {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    ...user,
+    cachedAccountSnapshot: user.cachedAccountSnapshot || null,
+    cachedAccountSnapshots: user.cachedAccountSnapshots || {},
+  };
+}
+
 function applyTheme() {
   document.body.dataset.theme = state.theme;
   localStorage.setItem("tradeflow-theme", state.theme);
@@ -138,7 +150,7 @@ async function requireSessionUser() {
       "Login succeeded, but the session cookie was not stored or sent back. On Render this usually means the browser blocked the cookie or the deployment URL changed."
     );
   }
-  return payload.user;
+  return normalizeUserPayload(payload.user);
 }
 
 function beginLoading() {
@@ -1215,7 +1227,7 @@ function bindAuthForms() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        state.user = await requireSessionUser();
+        state.user = normalizeUserPayload(await requireSessionUser());
         setSelectedExchange(state.user.activeExchange || payload.exchange || "bybit");
         state.activeTab = "home";
         await loadDashboardData();
@@ -1233,7 +1245,7 @@ function bindAuthForms() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        state.user = await requireSessionUser();
+        state.user = normalizeUserPayload(await requireSessionUser());
         setSelectedExchange(state.user.activeExchange || payload.exchange || "bybit");
         state.activeTab = "home";
         await loadDashboardData();
@@ -1251,7 +1263,7 @@ function bindAuthForms() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        state.user = await requireSessionUser();
+        state.user = normalizeUserPayload(await requireSessionUser());
         setSelectedExchange(state.user.activeExchange || payload.exchange || "bybit");
         state.activeTab = "home";
         await loadDashboardData();
@@ -1741,6 +1753,15 @@ function applyAccountSnapshot(account) {
   state.estimatedPnlPercent = 0;
 }
 
+function getCachedAccountSnapshot(exchange = getActiveExchange()) {
+  if (!state.user) {
+    return null;
+  }
+
+  const snapshots = state.user.cachedAccountSnapshots || {};
+  return snapshots[exchange] || state.user.cachedAccountSnapshot || null;
+}
+
 async function loadSavedExchangeSettings(exchange) {
   const targetExchange = exchange || getActiveExchange();
   if (!state.user) {
@@ -1799,16 +1820,25 @@ async function loadDashboardData() {
       render();
     });
 
-  applyAccountSnapshot(null);
+  const cachedSnapshot = getCachedAccountSnapshot(getActiveExchange());
+  applyAccountSnapshot(cachedSnapshot);
   const accountPromise = state.user.exchangeConnected
     ? api(`/api/exchange/account?exchange=${encodeURIComponent(getActiveExchange())}`)
         .then((account) => {
           applyAccountSnapshot(account);
+          state.user = {
+            ...state.user,
+            cachedAccountSnapshot: account,
+            cachedAccountSnapshots: {
+              ...(state.user.cachedAccountSnapshots || {}),
+              [account.exchange || getActiveExchange()]: account,
+            },
+          };
           state.loadingAccount = false;
           render();
         })
         .catch(() => {
-          applyAccountSnapshot(null);
+          applyAccountSnapshot(cachedSnapshot);
           state.loadingAccount = false;
           render();
         })
@@ -2963,7 +2993,7 @@ function bindDashboardActions() {
             method: "POST",
             body: JSON.stringify({ exchange: exchangeSelect.value }),
           });
-          state.user = result.user;
+          state.user = normalizeUserPayload(result.user);
           setSelectedExchange(state.user.activeExchange || exchangeSelect.value);
           await loadDashboardData();
           showNotice(`${getExchangeLabel(getActiveExchange())} is now active`);
@@ -3002,7 +3032,7 @@ function bindDashboardActions() {
             testnet: data.testnet === "true",
           }),
         });
-        state.user = result.user;
+        state.user = normalizeUserPayload(result.user);
         setSelectedExchange(state.user.activeExchange || data.exchange || getActiveExchange());
         await loadDashboardData();
         showNotice(`${getExchangeLabel(getActiveExchange())} connected successfully`);
@@ -3020,7 +3050,7 @@ function bindDashboardActions() {
           method: "POST",
           body: JSON.stringify({ enabled: data.enabled === "true" }),
         });
-        state.user = result.user;
+        state.user = normalizeUserPayload(result.user);
         render();
         showNotice("Mirror preference updated");
       }).catch((error) => showError(error.message));
@@ -3422,7 +3452,7 @@ async function bootstrap() {
   beginLoading();
   try {
     const me = await api("/api/auth/me");
-    state.user = me.user;
+    state.user = normalizeUserPayload(me.user);
     if (state.user?.activeExchange) {
       setSelectedExchange(state.user.activeExchange);
     }

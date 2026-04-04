@@ -2,10 +2,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 
-const { loadDb, saveDb, ensureAdminUser, sanitizeUser, shouldUseMongo } = require("./lib/db");
-const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
-const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
-
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
   if (!fs.existsSync(envPath)) {
@@ -30,7 +26,26 @@ function loadEnvFile() {
 
 loadEnvFile();
 
-const port = Number(process.env.PORT || 3000);
+const { loadDb, saveDb, ensureAdminUser, sanitizeUser, shouldUseMongo } = require("./lib/db");
+const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
+const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
+
+const DEFAULT_PORT = 3000;
+const MAX_PORT_RETRIES = 10;
+
+function getConfiguredPort() {
+  const rawPort = process.env.PORT;
+  const parsedPort = Number(rawPort || DEFAULT_PORT);
+
+  if (Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
+    return parsedPort;
+  }
+
+  console.warn(`Invalid PORT value "${rawPort}". Falling back to ${DEFAULT_PORT}.`);
+  return DEFAULT_PORT;
+}
+
+const port = getConfiguredPort();
 const publicDir = path.join(__dirname, "public");
 const BYBIT_USDT_NGN_URL = process.env.BYBIT_USDT_NGN_URL || "https://www.bybit.com/en/convert/usdt-to-ngn/";
 const FIAT_RATE_CACHE_TTL_MS = 1000 * 60 * 15;
@@ -167,6 +182,68 @@ async function validateCredentials(apiKey, secretEncrypted, testnet, exchange = 
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function cloneSerializable(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function sanitizeStoredAccountSnapshot(snapshot, fallbackExchange = "bybit") {
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+
+  const cloned = cloneSerializable(snapshot) || {};
+  return {
+    exchange: normalizeExchange(cloned.exchange, fallbackExchange),
+    balances: Array.isArray(cloned.balances) ? cloned.balances : [],
+    openOrders: Array.isArray(cloned.openOrders) ? cloned.openOrders : [],
+    totalUsdt: Number(cloned.totalUsdt || 0),
+    previousTotalUsdt: Number(cloned.previousTotalUsdt || 0),
+    totalNgn: Number(cloned.totalNgn || 0),
+    usdtNgnRate: Number(cloned.usdtNgnRate || 0),
+    estimatedPnlValue: Number(cloned.estimatedPnlValue || 0),
+    estimatedPnlPercent: Number(cloned.estimatedPnlPercent || 0),
+    todayPnlValue: Number(cloned.todayPnlValue || 0),
+    todayPnlPercent: Number(cloned.todayPnlPercent || 0),
+    todayOpeningUsdt: Number(cloned.todayOpeningUsdt || 0),
+    todayClosingUsdt: Number(cloned.todayClosingUsdt || 0),
+    todayLabel: String(cloned.todayLabel || ""),
+    monthPnlValue: Number(cloned.monthPnlValue || 0),
+    monthPnlPercent: Number(cloned.monthPnlPercent || 0),
+    monthOpeningUsdt: Number(cloned.monthOpeningUsdt || 0),
+    monthLabel: String(cloned.monthLabel || ""),
+    permissions: cloned.permissions
+      ? {
+          canTrade: !!cloned.permissions.canTrade,
+          canWithdraw: !!cloned.permissions.canWithdraw,
+          canDeposit: !!cloned.permissions.canDeposit,
+          readOnly: !!cloned.permissions.readOnly,
+        }
+      : undefined,
+    updatedAt: cloned.updatedAt || null,
+    cachedAt: cloned.cachedAt || cloned.updatedAt || null,
+    stale: !!cloned.stale,
+  };
+}
+
+function cacheAccountSnapshot(account, snapshot, exchange = getAccountExchange(account)) {
+  const cachedSnapshot = sanitizeStoredAccountSnapshot(
+    {
+      ...snapshot,
+      exchange,
+      cachedAt: nowIso(),
+    },
+    exchange
+  );
+  if (cachedSnapshot) {
+    account.lastSnapshot = cachedSnapshot;
+  }
+  return cachedSnapshot;
+}
+
+function getCachedAccountSnapshot(account, exchange = getAccountExchange(account)) {
+  return sanitizeStoredAccountSnapshot(account?.lastSnapshot, exchange);
 }
 
 function parseCookies(req) {
@@ -559,7 +636,7 @@ async function getAccountSnapshot(account, exchange) {
   );
   const pnl = calculatePortfolioPnl(balances);
   const performance = updateAccountPerformance(account, pnl.totalUsdt);
-  return {
+  const snapshot = {
     exchange,
     balances,
     totalUsdt: pnl.totalUsdt,
@@ -579,7 +656,10 @@ async function getAccountSnapshot(account, exchange) {
     monthLabel: performance.monthLabel,
     permissions: account.permissions,
     openOrders,
+    updatedAt: nowIso(),
   };
+  cacheAccountSnapshot(account, snapshot, exchange);
+  return snapshot;
 }
 
 async function getConnectedWalletDetails(user, usdtNgnRate) {
@@ -2251,12 +2331,21 @@ async function handleApi(req, res, url) {
       return true;
     }
 
+    const cachedSnapshot = getCachedAccountSnapshot(account, exchange);
     try {
       const snapshot = await getAccountSnapshot(account, exchange);
       account.lastValidatedAt = nowIso();
       persist();
       sendJson(res, 200, snapshot);
     } catch (error) {
+      if (cachedSnapshot) {
+        sendJson(res, 200, {
+          ...cachedSnapshot,
+          stale: true,
+          warning: `${getExchangeLabel(exchange)} live refresh failed, so the last saved snapshot is being shown.`,
+        });
+        return true;
+      }
       sendJson(res, 400, { error: error.message });
     }
     return true;
@@ -3013,10 +3102,49 @@ async function startServer() {
   ensureAdminUser(db);
   await saveDb(db);
 
-  server.listen(port, () => {
-    const storageMode = shouldUseMongo() ? "MongoDB" : "local JSON file";
-    console.log(`Trade MVP running on http://localhost:${port} using ${storageMode} storage`);
+  const listeningPort = await listenOnAvailablePort(server, port);
+  const storageMode = shouldUseMongo() ? "MongoDB" : "local JSON file";
+
+  if (listeningPort !== port) {
+    console.warn(`Port ${port} is already in use. Trade MVP switched to http://localhost:${listeningPort}.`);
+  }
+
+  console.log(`Trade MVP running on http://localhost:${listeningPort} using ${storageMode} storage`);
+}
+
+function listenOnce(targetServer, targetPort) {
+  return new Promise((resolve, reject) => {
+    const handleError = (error) => {
+      targetServer.off("listening", handleListening);
+      reject(error);
+    };
+
+    const handleListening = () => {
+      targetServer.off("error", handleError);
+      resolve();
+    };
+
+    targetServer.once("error", handleError);
+    targetServer.once("listening", handleListening);
+    targetServer.listen(targetPort);
   });
+}
+
+async function listenOnAvailablePort(targetServer, preferredPort) {
+  for (let offset = 0; offset <= MAX_PORT_RETRIES; offset += 1) {
+    const candidatePort = preferredPort + offset;
+
+    try {
+      await listenOnce(targetServer, candidatePort);
+      return candidatePort;
+    } catch (error) {
+      if (error.code !== "EADDRINUSE" || offset === MAX_PORT_RETRIES) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`Unable to find a free port between ${preferredPort} and ${preferredPort + MAX_PORT_RETRIES}.`);
 }
 
 startServer().catch((error) => {
