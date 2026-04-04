@@ -35,6 +35,10 @@ PORT=3000
 APP_SECRET=change-this-before-production
 ADMIN_EMAIL=admin@trade.local
 ADMIN_PASSWORD=Admin123!
+# Optional MongoDB app-state storage
+# MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>/<database>?retryWrites=true&w=majority
+# MONGODB_DB_NAME=trade_mvp
+# MONGODB_COLLECTION=app_state
 # Optional Bybit endpoints
 # BYBIT_BASE_URL=https://api.bybit.com
 # BYBIT_TESTNET_URL=https://api-testnet.bybit.com
@@ -47,6 +51,13 @@ npm start
 ```
 
 Then open `http://localhost:3000`.
+
+## Render Persistence
+
+For Render, set `MONGODB_URI` so users, sessions, and trades survive service sleep/redeploy cycles.
+
+- with `MONGODB_URI` set, the app stores its app state in MongoDB
+- without `MONGODB_URI`, the app falls back to the local JSON file at `data/app-db.json`
 
 ## Important Bybit Note
 

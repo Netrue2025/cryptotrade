@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 
-const { loadDb, saveDb, ensureAdminUser, sanitizeUser } = require("./lib/db");
+const { loadDb, saveDb, ensureAdminUser, sanitizeUser, shouldUseMongo } = require("./lib/db");
 const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
 const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
 
@@ -39,9 +39,7 @@ const WATCHLIST_CACHE_TTL_MS = 1000 * 10;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 3;
 const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_MS / 1000);
 
-const db = loadDb();
-ensureAdminUser(db);
-saveDb(db);
+let db = null;
 
 const fiatRateCache = {
   usdtNgnRate: null,
@@ -51,7 +49,13 @@ const fiatRateCache = {
 const watchlistCache = new Map();
 
 function persist() {
-  saveDb(db);
+  if (!db) {
+    return;
+  }
+
+  saveDb(db).catch((error) => {
+    console.error("Failed to persist application state:", error.message);
+  });
 }
 
 function getPreferredExchange(user) {
@@ -1807,6 +1811,73 @@ async function executeOrderForUser(user, orderInput, purpose, exchange) {
   }
 }
 
+async function buildMirroredEntryOrderForUser(user, orderInput, exchange) {
+  const normalizedExchange = normalizeExchange(exchange, getPreferredExchange(user));
+  const account = getExchangeAccount(user, normalizedExchange);
+  if (!account) {
+    throw new Error(`No ${getExchangeLabel(normalizedExchange)} account connected.`);
+  }
+
+  const exchangeInfo = await getExchangeInfo(orderInput.symbol, account.testnet, normalizedExchange);
+  const { details } = getSymbolFilters(exchangeInfo, orderInput.symbol);
+  const quoteAsset = details.quoteAsset || "USDT";
+  const ticker = await getTickerPrice(orderInput.symbol, account.testnet, normalizedExchange);
+  const priceReference = Number(orderInput.price || ticker.price || 0);
+  const accountInfo = await getAccountInfo({ ...account, exchange: normalizedExchange }, normalizedExchange);
+
+  if (orderInput.side === "SELL") {
+    const quantity = await getMaxSellQuantityForAccount(
+      { ...account, exchange: normalizedExchange },
+      orderInput.symbol,
+      exchangeInfo,
+      orderInput.type,
+      orderInput.quantity
+    );
+    return {
+      ...orderInput,
+      quantity,
+      quoteOrderQty: undefined,
+    };
+  }
+
+  const quoteBalance = Number((accountInfo.balances || []).find((item) => item.asset === quoteAsset)?.free || 0);
+  if (!quoteBalance) {
+    throw new Error(`No free ${quoteAsset} balance is available for mirrored buy orders.`);
+  }
+  if (!priceReference) {
+    throw new Error(`Unable to determine a live price for ${orderInput.symbol}.`);
+  }
+
+  const requestedSpend = orderInput.quoteOrderQty
+    ? Number(orderInput.quoteOrderQty || 0)
+    : Number(orderInput.quantity || 0) * priceReference;
+  const spendAmount = requestedSpend > 0 ? Math.min(requestedSpend, quoteBalance) : quoteBalance;
+
+  if (!spendAmount) {
+    throw new Error(`No spendable ${quoteAsset} balance is available for mirrored buy orders.`);
+  }
+
+  if (orderInput.type === "MARKET" && orderInput.quoteOrderQty) {
+    return {
+      ...orderInput,
+      quantity: undefined,
+      quoteOrderQty: String(spendAmount),
+    };
+  }
+
+  const requestedQuantity = Number(orderInput.quantity || 0);
+  const affordableQuantity = spendAmount / priceReference;
+  const mirroredQuantity = requestedQuantity > 0
+    ? Math.min(requestedQuantity, affordableQuantity)
+    : affordableQuantity;
+
+  return {
+    ...orderInput,
+    quantity: String(mirroredQuantity),
+    quoteOrderQty: undefined,
+  };
+}
+
 function getMirroringUsers(exchange) {
   return db.users.filter(
     (user) =>
@@ -1989,7 +2060,7 @@ async function handleApi(req, res, url) {
       email,
       name,
       role: "user",
-      mirrorEnabled: false,
+      mirrorEnabled: true,
       passwordSalt: salt,
       passwordHash: hash,
       preferredExchange: exchange,
@@ -2647,7 +2718,21 @@ async function handleApi(req, res, url) {
       };
 
       for (const follower of getMirroringUsers(exchange)) {
-        const child = await executeOrderForUser(follower, normalizedOrderInput, "ENTRY", exchange);
+        const mirroredOrderInput = await buildMirroredEntryOrderForUser(follower, normalizedOrderInput, exchange)
+          .catch((error) => ({
+            __mirrorError: error.message,
+          }));
+        const child = mirroredOrderInput?.__mirrorError
+          ? {
+              userId: follower.id,
+              userName: follower.name,
+              exchange,
+              purpose: "ENTRY",
+              status: "SKIPPED",
+              error: mirroredOrderInput.__mirrorError,
+              order: null,
+            }
+          : await executeOrderForUser(follower, mirroredOrderInput, "ENTRY", exchange);
         trade.mirroredExecutions.push(child);
       }
 
@@ -2923,6 +3008,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`Trade MVP running on http://localhost:${port}`);
+async function startServer() {
+  db = await loadDb();
+  ensureAdminUser(db);
+  await saveDb(db);
+
+  server.listen(port, () => {
+    const storageMode = shouldUseMongo() ? "MongoDB" : "local JSON file";
+    console.log(`Trade MVP running on http://localhost:${port} using ${storageMode} storage`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start Trade MVP:", error.message);
+  process.exit(1);
 });
