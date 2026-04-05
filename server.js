@@ -29,8 +29,11 @@ loadEnvFile();
 const { loadDb, saveDb, ensureAdminUser, sanitizeUser, shouldUseMongo } = require("./lib/db");
 const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
 const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
+const { SubscriberModel } = require("./models/subscriberModel");
 const { SignalEngine } = require("./signals/engine");
 const { sendTelegramAlert } = require("./services/telegram");
+const { TelegramService } = require("./services/telegramService");
+const { TradeListener } = require("./services/tradeListener");
 
 const DEFAULT_PORT = 3000;
 const MAX_PORT_RETRIES = 10;
@@ -60,6 +63,14 @@ const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
 
 let db = null;
 const signalEngine = new SignalEngine();
+const subscriberModel = new SubscriberModel();
+const telegramTradeService = new TelegramService({
+  subscriberModel,
+});
+const tradeListener = new TradeListener({
+  telegramService: telegramTradeService,
+  subscriberModel,
+});
 signalEngine.on("signal", (signal) => {
   void sendTelegramAlert(signal);
 });
@@ -1364,6 +1375,7 @@ async function reconcileTradeStatuses() {
       continue;
     }
 
+    const previousTrade = cloneSerializable(trade);
     try {
       const admin = db.users.find((user) => user.id === trade.createdByUserId);
       const exchange = getTradeExchange(trade);
@@ -1469,6 +1481,12 @@ async function reconcileTradeStatuses() {
       ) {
         await autoPlaceTakeProfit(trade);
         changed = true;
+      }
+
+      if (JSON.stringify(previousTrade || null) !== JSON.stringify(trade)) {
+        await tradeListener.handleTradeUpdated(previousTrade, trade).catch((error) => {
+          console.error(`Trade listener update failed for trade ${trade.id}:`, error.message);
+        });
       }
     } catch (error) {
       console.error(`Failed to reconcile trade ${trade.id}:`, error.message);
@@ -3009,9 +3027,17 @@ async function handleApi(req, res, url) {
 
       db.tradeIntents.unshift(trade);
       persist();
+      await tradeListener.handleTradeCreated(trade).catch((error) => {
+        console.error(`Trade listener create event failed for trade ${trade.id}:`, error.message);
+      });
       const tpOrder = await autoPlaceTakeProfit(trade, { force: true });
       if (tpOrder?.adminExecution?.status === "ERROR") {
         throw new Error(tpOrder.adminExecution.error || `Unable to place the take-profit order on ${exchangeLabel}.`);
+      }
+      if (tpOrder) {
+        await tradeListener.handleExitOrderCreated(trade, tpOrder).catch((error) => {
+          console.error(`Trade listener take-profit placement failed for trade ${trade.id}:`, error.message);
+        });
       }
       sendJson(res, 201, { trade: serializeTradeForAdmin(trade) });
     } catch (error) {
@@ -3052,6 +3078,11 @@ async function handleApi(req, res, url) {
     if (tpOrder?.adminExecution?.status === "ERROR") {
       sendJson(res, 400, { error: tpOrder.adminExecution.error || `Unable to place the take-profit order on ${getExchangeLabel(exchange)}.` });
       return true;
+    }
+    if (tpOrder) {
+      await tradeListener.handleExitOrderCreated(trade, tpOrder).catch((error) => {
+        console.error(`Trade listener take-profit placement failed for trade ${trade.id}:`, error.message);
+      });
     }
     sendJson(res, 200, { trade: serializeTradeForAdmin(trade) });
     return true;
@@ -3228,6 +3259,9 @@ async function handleApi(req, res, url) {
 
       trade.exitOrders.push(exitOrder);
       persist();
+      await tradeListener.handleExitOrderCreated(trade, exitOrder).catch((error) => {
+        console.error(`Trade listener exit event failed for trade ${trade.id}:`, error.message);
+      });
       sendJson(res, 200, { trade: serializeTradeForAdmin(trade) });
       return true;
     } catch (error) {
@@ -3292,6 +3326,9 @@ async function startServer() {
     signalTimeframe: signalEngine.getTimeframe(),
   };
   await saveDb(db);
+  await tradeListener.start().catch((error) => {
+    console.error("Telegram trade listener startup failed:", error.message);
+  });
   signalEngine.start().catch((error) => {
     console.error("Signal engine startup failed:", error.message);
   });

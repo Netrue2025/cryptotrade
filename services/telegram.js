@@ -125,11 +125,11 @@ function buildTelegramMessage(signal) {
 }
 
 async function sendTelegramAlert(signal) {
-  const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const chatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  const token = String(process.env.TELEGRAM_SIGNAL_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  const chatId = String(process.env.TELEGRAM_SIGNAL_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "").trim();
 
   if (!token || !chatId) {
-    console.warn("Telegram alert skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing.");
+    console.warn("Telegram alert skipped: TELEGRAM_SIGNAL_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_SIGNAL_CHAT_ID/TELEGRAM_CHAT_ID is missing.");
     return { ok: false, skipped: true, reason: "missing_credentials" };
   }
 
