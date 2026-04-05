@@ -99,12 +99,16 @@ const state = {
   tradeRefreshTimer: null,
   signalFeed: {
     pairs: [],
-    timeframe: "5m",
+    timeframe: "30m",
+    supportedTimeframes: ["30m", "1h"],
     signals: [],
     streamConnected: false,
     statusMessage: "Connecting to the live signal engine...",
     notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
     audioUnlocked: false,
+    selectedIds: [],
+    deleting: false,
+    switchingTimeframe: false,
   },
 };
 
@@ -169,7 +173,60 @@ function mergeSignalList(signals = []) {
   return [...signals]
     .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
     .filter((signal, index, list) => list.findIndex((item) => item.id === signal.id) === index)
-    .slice(0, 80);
+    .slice(0, 500);
+}
+
+function refreshSignalPaneDom() {
+  if (!state.user || state.activeTab !== "signals") {
+    return;
+  }
+
+  const host = document.getElementById("signal-page-shell-host");
+  if (!host || !window.SignalPage?.renderSignalPage) {
+    return;
+  }
+
+  host.innerHTML = window.SignalPage.renderSignalPage({
+    signalFeed: state.signalFeed,
+    formatNumber,
+    formatUsdtUnit,
+  });
+  bindSignalFeedActions();
+}
+
+function updateSignalFeed(patch, options = {}) {
+  state.signalFeed = {
+    ...state.signalFeed,
+    ...patch,
+  };
+
+  if (options.render) {
+    render();
+    return;
+  }
+
+  refreshSignalPaneDom();
+}
+
+function toggleSignalSelection(signalId) {
+  const id = String(signalId || "").trim();
+  if (!id) {
+    return;
+  }
+
+  const selectedIds = state.signalFeed.selectedIds.includes(id)
+    ? state.signalFeed.selectedIds.filter((item) => item !== id)
+    : [...state.signalFeed.selectedIds, id];
+
+  updateSignalFeed({ selectedIds });
+}
+
+function toggleSelectAllSignals() {
+  const allIds = (state.signalFeed.signals || []).map((signal) => signal.id);
+  const shouldClear = allIds.length && state.signalFeed.selectedIds.length === allIds.length;
+  updateSignalFeed({
+    selectedIds: shouldClear ? [] : allIds,
+  });
 }
 
 async function api(path, options = {}) {
@@ -349,7 +406,7 @@ async function enableSignalAlerts() {
   }
   updateSignalNotificationPermission();
   await unlockSignalAudio();
-  render();
+  refreshSignalPaneDom();
   showNotice("Signal alerts enabled");
 }
 
@@ -384,13 +441,24 @@ function applySignalSnapshot(payload, options = {}) {
     nextSignals.forEach((signal) => seenSignalIds.add(signal.id));
   }
 
-  state.signalFeed = {
-    ...state.signalFeed,
+  const nextSelectedIds = state.signalFeed.selectedIds.filter((id) => nextSignals.some((signal) => signal.id === id));
+  updateSignalFeed({
     pairs: payload.pairs || state.signalFeed.pairs,
     timeframe: payload.timeframe || state.signalFeed.timeframe,
+    supportedTimeframes:
+      Array.isArray(payload.supportedTimeframes) && payload.supportedTimeframes.length
+        ? payload.supportedTimeframes
+        : state.signalFeed.supportedTimeframes,
     signals: nextSignals,
     statusMessage: nextSignals.length ? "New BUY signals are sorted with the freshest setup first." : "Scanning the market for the next BUY setup.",
-  };
+    selectedIds: nextSelectedIds,
+    deleting: false,
+    switchingTimeframe: false,
+  });
+
+  if (state.actionModal?.type === "signal-chart" && !nextSignals.some((signal) => signal.id === state.actionModal.signalId)) {
+    clearActionModal();
+  }
 }
 
 async function loadSignalsSnapshot(options = {}) {
@@ -400,7 +468,6 @@ async function loadSignalsSnapshot(options = {}) {
 
   const payload = await api("/api/signals");
   applySignalSnapshot(payload, options);
-  render();
 }
 
 function disconnectSignalStream() {
@@ -408,10 +475,9 @@ function disconnectSignalStream() {
     signalEventSource.close();
     signalEventSource = null;
   }
-  state.signalFeed = {
-    ...state.signalFeed,
+  updateSignalFeed({
     streamConnected: false,
-  };
+  });
 }
 
 function connectSignalStream() {
@@ -422,12 +488,10 @@ function connectSignalStream() {
   signalEventSource = new EventSource("/api/signals/stream", { withCredentials: true });
 
   signalEventSource.onopen = () => {
-    state.signalFeed = {
-      ...state.signalFeed,
+    updateSignalFeed({
       streamConnected: true,
       statusMessage: "Live Binance signal stream connected.",
-    };
-    render();
+    });
   };
 
   signalEventSource.onmessage = (event) => {
@@ -437,39 +501,32 @@ function connectSignalStream() {
         applySignalSnapshot(payload.payload || {}, { silent: true });
       }
       if (payload.type === "status") {
-        state.signalFeed = {
-          ...state.signalFeed,
+        updateSignalFeed({
           streamConnected: !!payload.payload?.ok,
           statusMessage: payload.payload?.message || state.signalFeed.statusMessage,
-        };
+        });
       }
       if (payload.type === "signal" && payload.payload) {
         const signal = payload.payload;
-        state.signalFeed = {
-          ...state.signalFeed,
+        updateSignalFeed({
           signals: mergeSignalList([signal, ...(state.signalFeed.signals || [])]),
           statusMessage: `${signal.pair} triggered a fresh ${String(signal.strategyType || "").replace(/_/g, "-")} BUY setup.`,
-        };
+        });
         announceSignal(signal);
       }
-      render();
     } catch {
-      state.signalFeed = {
-        ...state.signalFeed,
+      updateSignalFeed({
         streamConnected: false,
         statusMessage: "Signal stream payload could not be parsed.",
-      };
-      render();
+      });
     }
   };
 
   signalEventSource.onerror = () => {
-    state.signalFeed = {
-      ...state.signalFeed,
+    updateSignalFeed({
       streamConnected: false,
       statusMessage: "Signal stream reconnecting...",
-    };
-    render();
+    });
   };
 }
 
@@ -533,6 +590,66 @@ function openSignalModal(signalId) {
     chartError: null,
   });
   void refreshSignalChartModal();
+}
+
+async function deleteSelectedSignals() {
+  const signalIds = [...state.signalFeed.selectedIds];
+  if (!signalIds.length) {
+    showError("Select at least one signal to delete.");
+    return;
+  }
+
+  updateSignalFeed({ deleting: true });
+  try {
+    const result = await api("/api/signals/delete", {
+      method: "POST",
+      body: JSON.stringify({ signalIds }),
+    });
+    applySignalSnapshot({
+      pairs: state.signalFeed.pairs,
+      timeframe: state.signalFeed.timeframe,
+      signals: result.signals || [],
+    });
+    showNotice(`${result.deletedCount || signalIds.length} signal${(result.deletedCount || signalIds.length) === 1 ? "" : "s"} deleted`);
+  } catch (error) {
+    updateSignalFeed({ deleting: false });
+    showError(error.message);
+  }
+}
+
+async function updateSignalTimeframe(timeframe) {
+  const nextTimeframe = String(timeframe || "").trim();
+  if (!nextTimeframe || nextTimeframe === state.signalFeed.timeframe || state.signalFeed.switchingTimeframe) {
+    return;
+  }
+
+  updateSignalFeed({
+    switchingTimeframe: true,
+    statusMessage: `Switching signal engine to ${nextTimeframe} candles...`,
+  });
+
+  try {
+    const snapshot = await api("/api/signals/timeframe", {
+      method: "POST",
+      body: JSON.stringify({ timeframe: nextTimeframe }),
+    });
+    applySignalSnapshot(snapshot, { silent: true });
+    updateSignalFeed({
+      streamConnected: true,
+      statusMessage: `Signal timeframe switched to ${nextTimeframe}.`,
+    });
+    if (state.actionModal?.type === "signal-chart") {
+      void refreshSignalChartModal(true);
+    }
+  } catch (error) {
+    updateSignalFeed({
+      switchingTimeframe: false,
+      statusMessage: state.signalFeed.signals.length
+        ? "New BUY signals are sorted with the freshest setup first."
+        : "Scanning the market for the next BUY setup.",
+    });
+    showError(error.message);
+  }
 }
 
 function escapeHtml(value) {
@@ -2122,11 +2239,9 @@ async function loadDashboardData() {
   updateSignalNotificationPermission();
   connectSignalStream();
   void loadSignalsSnapshot({ silent: true }).catch(() => {
-    state.signalFeed = {
-      ...state.signalFeed,
+    updateSignalFeed({
       statusMessage: "Signal snapshot will appear as soon as the stream responds.",
-    };
-    render();
+    });
   });
 
   state.loadingWatchlist = !state.watchlistSeed.length;
@@ -3202,11 +3317,15 @@ function renderSettingsPane() {
 
 function renderSignalsPane() {
   return window.SignalPage?.renderSignalPage
-    ? window.SignalPage.renderSignalPage({
-        signalFeed: state.signalFeed,
-        formatNumber,
-        formatUsdtUnit,
-      })
+    ? `
+      <div id="signal-page-shell-host">
+        ${window.SignalPage.renderSignalPage({
+          signalFeed: state.signalFeed,
+          formatNumber,
+          formatUsdtUnit,
+        })}
+      </div>
+    `
     : `<section class="mobile-card"><p class="muted-copy">Signal dashboard is loading...</p></section>`;
 }
 
@@ -3555,12 +3674,16 @@ function bindDashboardActions() {
       state.tradeMarketMap = {};
       state.signalFeed = {
         pairs: [],
-        timeframe: "5m",
+        timeframe: "30m",
+        supportedTimeframes: ["30m", "1h"],
         signals: [],
         streamConnected: false,
         statusMessage: "Connecting to the live signal engine...",
         notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
         audioUnlocked: false,
+        selectedIds: [],
+        deleting: false,
+        switchingTimeframe: false,
       };
       state.expandedTradeIds = [];
       state.expandedPendingOrderIds = [];
@@ -3614,6 +3737,35 @@ function bindSignalFeedActions() {
       });
     });
   }
+
+  const selectAllButton = document.getElementById("signal-select-all-btn");
+  if (selectAllButton) {
+    selectAllButton.addEventListener("click", () => {
+      toggleSelectAllSignals();
+    });
+  }
+
+  const deleteButton = document.getElementById("signal-delete-btn");
+  if (deleteButton) {
+    deleteButton.addEventListener("click", () => {
+      void deleteSelectedSignals();
+    });
+  }
+
+  document.querySelectorAll("[data-signal-timeframe]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void updateSignalTimeframe(button.dataset.signalTimeframe);
+    });
+  });
+
+  document.querySelectorAll("[data-signal-select]").forEach((input) => {
+    input.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    input.addEventListener("change", () => {
+      toggleSignalSelection(input.dataset.signalSelect);
+    });
+  });
 
   document.querySelectorAll("[data-open-signal]").forEach((button) => {
     button.addEventListener("click", () => {

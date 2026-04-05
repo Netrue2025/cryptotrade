@@ -33,6 +33,11 @@
     const signals = signalFeed?.signals || [];
     const streamLabel = signalFeed?.streamConnected ? "Live" : "Reconnecting";
     const statusTone = signalFeed?.streamConnected ? "live" : "lagging";
+    const selectedIds = signalFeed?.selectedIds || [];
+    const deleting = !!signalFeed?.deleting;
+    const switchingTimeframe = !!signalFeed?.switchingTimeframe;
+    const allSelected = !!signals.length && selectedIds.length === signals.length;
+    const supportedTimeframes = signalFeed?.supportedTimeframes?.length ? signalFeed.supportedTimeframes : ["30m", "1h"];
 
     return `
       <section class="signal-page-shell">
@@ -40,13 +45,29 @@
           <div>
             <p class="eyebrow">Realtime Buy Alerts</p>
             <h3>Signal Dashboard</h3>
-            <p class="muted-copy">Only the top 15 USDT pairs are tracked. New BUY alerts stream in automatically from the Binance signal engine.</p>
+            <p class="muted-copy">Only the top 15 USDT pairs are tracked. Signals stay on the board until they expire after 24 hours or you delete them manually.</p>
           </div>
           <div class="signal-hero-stack">
             <div class="signal-stream-pill ${statusTone}">
               <span class="signal-stream-dot"></span>
               <strong>${streamLabel}</strong>
-              <span>${signalFeed?.timeframe || "5m"}</span>
+              <span>${signalFeed?.timeframe || "30m"}</span>
+            </div>
+            <div class="signal-timeframe-toggle" role="group" aria-label="Signal timeframe">
+              ${supportedTimeframes
+                .map(
+                  (timeframe) => `
+                    <button
+                      class="signal-timeframe-btn ${signalFeed?.timeframe === timeframe ? "active" : ""}"
+                      type="button"
+                      data-signal-timeframe="${timeframe}"
+                      ${switchingTimeframe ? "disabled" : ""}
+                    >
+                      ${timeframe}
+                    </button>
+                  `
+                )
+                .join("")}
             </div>
             <button id="signal-alert-enable-btn" class="button-secondary signal-alert-btn" type="button">
               ${signalFeed?.audioUnlocked ? "Alerts armed" : "Enable alerts"}
@@ -75,6 +96,12 @@
               <h4>Latest BUY Signals</h4>
               <p class="muted-copy">${signalFeed?.statusMessage || "Waiting for the next qualified setup."}</p>
             </div>
+            <div class="signal-board-actions">
+              <button class="text-link" id="signal-select-all-btn" type="button">${allSelected ? "Clear selection" : "Select all"}</button>
+              <button class="mini-action danger" id="signal-delete-btn" type="button" ${selectedIds.length && !deleting ? "" : "disabled"}>
+                ${deleting ? "Deleting..." : `Delete selected${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
+              </button>
+            </div>
           </div>
           <div class="signal-list" id="signal-feed-list">
             ${
@@ -83,20 +110,26 @@
                     .map((signal) => {
                       const meta = getStrategyMeta(signal.strategyType);
                       return `
-                        <button class="signal-list-row signal-pop-in" data-open-signal="${signal.id}" type="button">
-                          <div class="signal-list-main">
-                            <div class="signal-row-top">
-                              <strong>${formatPair(signal.pair)}</strong>
-                              <span class="signal-strategy-badge ${meta.className}">${meta.label}</span>
+                        <div class="signal-list-row signal-pop-in">
+                          <label class="signal-select-box" aria-label="Select ${formatPair(signal.pair)}">
+                            <input type="checkbox" data-signal-select="${signal.id}" ${selectedIds.includes(signal.id) ? "checked" : ""} />
+                            <span></span>
+                          </label>
+                          <button class="signal-row-open" data-open-signal="${signal.id}" type="button">
+                            <div class="signal-list-main">
+                              <div class="signal-row-top">
+                                <strong>${formatPair(signal.pair)}</strong>
+                                <span class="signal-strategy-badge ${meta.className}">${meta.label}</span>
+                              </div>
+                              <p class="muted-copy">Entry ${formatNumber(signal.entryPrice, 6)} | TP ${formatNumber(signal.takeProfit, 6)} | SL ${formatNumber(signal.stopLoss, 6)}</p>
                             </div>
-                            <p class="muted-copy">Entry ${formatNumber(signal.entryPrice, 6)} | TP ${formatNumber(signal.takeProfit, 6)} | SL ${formatNumber(signal.stopLoss, 6)}</p>
-                          </div>
-                          <div class="signal-list-side">
-                            <strong class="positive">BUY</strong>
-                            <p class="muted-copy">${formatTimestamp(signal.timestamp)}</p>
-                            <p class="signal-confidence">Confidence ${Math.round(Number(signal.confidence || 0))}%</p>
-                          </div>
-                        </button>
+                            <div class="signal-list-side">
+                              <strong class="positive">BUY</strong>
+                              <p class="muted-copy">${formatTimestamp(signal.timestamp)}</p>
+                              <p class="signal-confidence">Confidence ${Math.round(Number(signal.confidence || 0))}%</p>
+                            </div>
+                          </button>
+                        </div>
                       `;
                     })
                     .join("")

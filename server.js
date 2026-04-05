@@ -56,11 +56,15 @@ const WATCHLIST_CACHE_TTL_MS = 1000 * 10;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 3;
 const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_MS / 1000);
 const SIGNAL_STREAM_KEEPALIVE_MS = 20_000;
+const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
 
 let db = null;
 const signalEngine = new SignalEngine();
 signalEngine.on("signal", (signal) => {
   void sendTelegramAlert(signal);
+});
+signalEngine.on("snapshot", () => {
+  persistSignalState();
 });
 
 const fiatRateCache = {
@@ -78,6 +82,27 @@ function persist() {
   saveDb(db).catch((error) => {
     console.error("Failed to persist application state:", error.message);
   });
+}
+
+function persistSignalState() {
+  if (!db) {
+    return;
+  }
+
+  db.signals = signalEngine.getStoredSignals();
+  db.meta = {
+    ...(db.meta || {}),
+    signalTimeframe: signalEngine.getTimeframe(),
+  };
+  persist();
+}
+
+function sweepExpiredSignals() {
+  const expiredSignals = signalEngine.expireSignals();
+  if (expiredSignals.length) {
+    console.log(`Expired ${expiredSignals.length} signal${expiredSignals.length === 1 ? "" : "s"} after 24 hours.`);
+  }
+  return expiredSignals;
 }
 
 function getPreferredExchange(user) {
@@ -2251,6 +2276,7 @@ async function handleApi(req, res, url) {
     if (!user) {
       return true;
     }
+    sweepExpiredSignals();
     sendJson(res, 200, signalEngine.getSnapshot());
     return true;
   }
@@ -2284,6 +2310,7 @@ async function handleApi(req, res, url) {
       return true;
     }
 
+    sweepExpiredSignals();
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -2310,8 +2337,16 @@ async function handleApi(req, res, url) {
       });
     };
 
+    const onSnapshot = (snapshot) => {
+      writeSse(res, {
+        type: "snapshot",
+        payload: snapshot,
+      });
+    };
+
     signalEngine.on("signal", onSignal);
     signalEngine.on("status", onStatus);
+    signalEngine.on("snapshot", onSnapshot);
 
     const keepAlive = setInterval(() => {
       writeSse(res, {
@@ -2324,8 +2359,61 @@ async function handleApi(req, res, url) {
       clearInterval(keepAlive);
       signalEngine.off("signal", onSignal);
       signalEngine.off("status", onStatus);
+      signalEngine.off("snapshot", onSnapshot);
       res.end();
     });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/signals/delete") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    const body = await readBody(req);
+    const signalIds = Array.isArray(body.signalIds)
+      ? [...new Set(body.signalIds.map((item) => String(item || "").trim()).filter(Boolean))]
+      : [];
+
+    if (!signalIds.length) {
+      sendJson(res, 400, { error: "Select at least one signal to delete." });
+      return true;
+    }
+
+    const deleted = signalEngine.deleteSignals(signalIds);
+    if (!deleted.length) {
+      sendJson(res, 404, { error: "No matching active signals were found to delete." });
+      return true;
+    }
+
+    sendJson(res, 200, {
+      deletedCount: deleted.length,
+      signals: signalEngine.getSnapshot().signals,
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/signals/timeframe") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    const body = await readBody(req);
+    const timeframe = String(body.timeframe || "").trim();
+    if (!timeframe) {
+      sendJson(res, 400, { error: "A signal timeframe is required." });
+      return true;
+    }
+
+    try {
+      const snapshot = await signalEngine.setTimeframe(timeframe);
+      persistSignalState();
+      sendJson(res, 200, snapshot);
+    } catch (error) {
+      sendJson(res, 400, { error: error.message || "Signal timeframe could not be updated." });
+    }
     return true;
   }
 
@@ -3195,10 +3283,21 @@ const server = http.createServer(async (req, res) => {
 async function startServer() {
   db = await loadDb();
   ensureAdminUser(db);
+  await signalEngine.setTimeframe(db.meta?.signalTimeframe);
+  signalEngine.hydrateSignals(db.signals || []);
+  sweepExpiredSignals();
+  db.signals = signalEngine.getStoredSignals();
+  db.meta = {
+    ...(db.meta || {}),
+    signalTimeframe: signalEngine.getTimeframe(),
+  };
   await saveDb(db);
   signalEngine.start().catch((error) => {
     console.error("Signal engine startup failed:", error.message);
   });
+  setInterval(() => {
+    sweepExpiredSignals();
+  }, SIGNAL_EXPIRY_SWEEP_MS);
 
   const listeningPort = await listenOnAvailablePort(server, port);
   const storageMode = shouldUseMongo() ? "MongoDB" : "local JSON file";

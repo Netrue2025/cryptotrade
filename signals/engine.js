@@ -5,7 +5,18 @@ const { evaluateBreakoutConfirmation } = require("../strategies/breakout-confirm
 const { evaluateEmaRsiPullback } = require("../strategies/ema-rsi-pullback");
 const { evaluateResistanceTouch } = require("../strategies/resistance-touch");
 const { evaluateSupportTouch } = require("../strategies/support-touch");
-const { LEVEL_LOOKBACK, MAX_SIGNAL_HISTORY, MIN_CONFIDENCE, SIGNAL_COOLDOWN_MS, SIGNAL_HISTORY_LIMIT, SIGNAL_PAIRS, SIGNAL_TIMEFRAME } = require("./config");
+const {
+  ACTIVE_SIGNAL_STATUS,
+  LEVEL_LOOKBACK,
+  MAX_SIGNAL_HISTORY,
+  MIN_CONFIDENCE,
+  SIGNAL_COOLDOWN_MS,
+  SIGNAL_EXPIRY_MS,
+  SIGNAL_HISTORY_LIMIT,
+  SIGNAL_PAIRS,
+  SIGNAL_TIMEFRAME,
+  SUPPORTED_SIGNAL_TIMEFRAMES,
+} = require("./config");
 const { SignalStore } = require("./store");
 const { BinanceSignalStream } = require("../websocket/binance-signal-stream");
 
@@ -42,20 +53,43 @@ function normalizeIncomingCandle(candle) {
 }
 
 class SignalEngine extends EventEmitter {
-  constructor() {
+  constructor({ timeframe } = {}) {
     super();
     this.store = new SignalStore({
       maxSignalHistory: MAX_SIGNAL_HISTORY,
       cooldownMs: SIGNAL_COOLDOWN_MS,
+      expiryMs: SIGNAL_EXPIRY_MS,
     });
-    this.stream = new BinanceSignalStream({
-      pairs: SIGNAL_PAIRS,
-      interval: SIGNAL_TIMEFRAME,
-    });
+    this.timeframe = this.normalizeTimeframe(timeframe);
+    this.stream = this.createStream(this.timeframe);
     this.started = false;
     this.boundOnKline = (payload) => this.handleKline(payload);
     this.boundOnStatus = (status) => this.emit("status", status);
     this.boundOnError = (error) => this.emit("status", { ok: false, message: error.message || "Signal engine error." });
+  }
+
+  normalizeTimeframe(timeframe) {
+    const value = String(timeframe || "").trim();
+    return SUPPORTED_SIGNAL_TIMEFRAMES.includes(value) ? value : SIGNAL_TIMEFRAME;
+  }
+
+  isSupportedTimeframe(timeframe) {
+    return SUPPORTED_SIGNAL_TIMEFRAMES.includes(String(timeframe || "").trim());
+  }
+
+  createStream(timeframe) {
+    return new BinanceSignalStream({
+      pairs: SIGNAL_PAIRS,
+      interval: timeframe,
+    });
+  }
+
+  async seedPairStates(stream = this.stream) {
+    const seedMap = await stream.seedCandles(SIGNAL_HISTORY_LIMIT);
+    for (const pair of SIGNAL_PAIRS) {
+      const candles = (seedMap.get(pair) || []).map(normalizeIncomingCandle);
+      this.store.upsertPairState(pair, this.buildPairState(pair, candles));
+    }
   }
 
   async start() {
@@ -63,12 +97,7 @@ class SignalEngine extends EventEmitter {
       return;
     }
 
-    const seedMap = await this.stream.seedCandles(SIGNAL_HISTORY_LIMIT);
-    for (const pair of SIGNAL_PAIRS) {
-      const candles = (seedMap.get(pair) || []).map(normalizeIncomingCandle);
-      this.store.upsertPairState(pair, this.buildPairState(pair, candles));
-    }
-
+    await this.seedPairStates();
     this.stream.on("kline", this.boundOnKline);
     this.stream.on("status", this.boundOnStatus);
     this.stream.on("error", this.boundOnError);
@@ -88,12 +117,80 @@ class SignalEngine extends EventEmitter {
   }
 
   getSignals() {
-    return this.store.getSignals().sort(sortSignals);
+    return this.store.getSignals([ACTIVE_SIGNAL_STATUS]).sort(sortSignals);
+  }
+
+  getStoredSignals() {
+    return this.store.getStoredSignals().sort(sortSignals);
+  }
+
+  getTimeframe() {
+    return this.timeframe;
+  }
+
+  async setTimeframe(timeframe) {
+    if (timeframe !== undefined && timeframe !== null && String(timeframe).trim() && !this.isSupportedTimeframe(timeframe)) {
+      throw new Error(`Unsupported timeframe. Use ${SUPPORTED_SIGNAL_TIMEFRAMES.join(" or ")}.`);
+    }
+
+    const nextTimeframe = this.normalizeTimeframe(timeframe);
+    if (nextTimeframe === this.timeframe) {
+      return this.getSnapshot();
+    }
+
+    const wasStarted = this.started;
+    if (wasStarted) {
+      this.stream.off("kline", this.boundOnKline);
+      this.stream.off("status", this.boundOnStatus);
+      this.stream.off("error", this.boundOnError);
+      this.stream.stop();
+      this.started = false;
+    }
+
+    this.stream = this.createStream(nextTimeframe);
+    this.timeframe = nextTimeframe;
+    await this.seedPairStates();
+
+    if (wasStarted) {
+      this.stream.on("kline", this.boundOnKline);
+      this.stream.on("status", this.boundOnStatus);
+      this.stream.on("error", this.boundOnError);
+      this.stream.start();
+      this.started = true;
+    }
+
+    this.emit("status", {
+      ok: true,
+      message: `Signal timeframe switched to ${nextTimeframe}.`,
+    });
+    this.emit("snapshot", this.getSnapshot());
+    return this.getSnapshot();
+  }
+
+  hydrateSignals(signals = []) {
+    this.store.hydrateSignals(signals);
+  }
+
+  expireSignals(now = Date.now()) {
+    const expired = this.store.expireSignals(now);
+    if (expired.length) {
+      this.emit("snapshot", this.getSnapshot());
+    }
+    return expired;
+  }
+
+  deleteSignals(signalIds = []) {
+    const deleted = this.store.deleteSignals(signalIds);
+    if (deleted.length) {
+      this.emit("snapshot", this.getSnapshot());
+    }
+    return deleted;
   }
 
   getSnapshot() {
     return {
-      timeframe: SIGNAL_TIMEFRAME,
+      timeframe: this.timeframe,
+      supportedTimeframes: SUPPORTED_SIGNAL_TIMEFRAMES,
       pairs: SIGNAL_PAIRS,
       streamStatus: "LIVE",
       signals: this.getSignals(),
@@ -111,7 +208,7 @@ class SignalEngine extends EventEmitter {
     const signal = signalId ? this.store.getSignal(signalId) : this.getSignals().find((item) => item.pair === normalizedPair) || null;
     return {
       pair: normalizedPair,
-      timeframe: SIGNAL_TIMEFRAME,
+      timeframe: this.timeframe,
       updatedAt: pairState.updatedAt,
       candles: pairState.candles.map((candle) => ({
         time: Math.floor(Number(candle.openTime || 0) / 1000),
@@ -152,8 +249,9 @@ class SignalEngine extends EventEmitter {
     if (normalized.isClosed) {
       const nextSignal = this.evaluatePair(nextState);
       if (nextSignal) {
-        this.store.recordSignal(nextSignal);
-        this.emit("signal", nextSignal);
+        const recordedSignal = this.store.recordSignal(nextSignal);
+        this.emit("signal", recordedSignal);
+        this.emit("snapshot", this.getSnapshot());
       }
     }
   }
