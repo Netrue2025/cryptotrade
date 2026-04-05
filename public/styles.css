@@ -147,6 +147,223 @@ button {
   color: var(--warning);
 }
 
+.signal-page-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.signal-page-hero,
+.signal-page-toolbar,
+.signal-board-card {
+  border-radius: 24px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.signal-page-hero {
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.signal-hero-stack {
+  display: grid;
+  gap: 10px;
+  min-width: 160px;
+}
+
+.signal-stream-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  background: var(--soft-surface);
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.signal-stream-pill.live .signal-stream-dot {
+  background: #16c47f;
+  box-shadow: 0 0 0 6px rgba(22, 196, 127, 0.12);
+}
+
+.signal-stream-pill.lagging .signal-stream-dot {
+  background: #f59b1d;
+  box-shadow: 0 0 0 6px rgba(245, 155, 29, 0.14);
+}
+
+.signal-stream-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.signal-alert-btn {
+  width: 100%;
+}
+
+.signal-page-toolbar {
+  padding: 12px 14px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.signal-toolbar-pill {
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--soft-surface);
+  display: grid;
+  gap: 4px;
+}
+
+.signal-toolbar-pill span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.signal-board-card {
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.signal-board-head h4 {
+  margin: 0 0 4px;
+}
+
+.signal-list {
+  display: grid;
+  gap: 10px;
+  max-height: calc(100vh - 330px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.signal-list-row {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--ticket-bg);
+  border-radius: 20px;
+  padding: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.signal-list-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(47, 125, 246, 0.26);
+  box-shadow: 0 10px 24px rgba(18, 26, 43, 0.08);
+}
+
+.signal-list-main,
+.signal-list-side {
+  display: grid;
+  gap: 4px;
+}
+
+.signal-list-side {
+  justify-items: end;
+  flex-shrink: 0;
+}
+
+.signal-row-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.signal-strategy-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.signal-strategy-badge.support {
+  background: rgba(47, 125, 246, 0.14);
+  color: #2f7df6;
+}
+
+.signal-strategy-badge.resistance {
+  background: rgba(245, 155, 29, 0.16);
+  color: #c97300;
+}
+
+.signal-strategy-badge.ema-rsi {
+  background: rgba(111, 94, 249, 0.14);
+  color: #6f5ef9;
+}
+
+.signal-strategy-badge.breakout {
+  background: rgba(22, 196, 127, 0.14);
+  color: #16a767;
+}
+
+.signal-confidence {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.signal-empty-state {
+  padding: 20px;
+  border-radius: 20px;
+  border: 1px dashed var(--line);
+  background: var(--soft-surface);
+  display: grid;
+  gap: 6px;
+}
+
+.signal-chart-modal-host {
+  width: 100%;
+  min-height: 360px;
+  border-radius: 20px;
+  overflow: hidden;
+  background: var(--soft-surface);
+}
+
+.signal-modal-card {
+  width: min(920px, calc(100vw - 24px));
+}
+
+.signal-modal-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.signal-pop-in {
+  animation: signal-pop-in 280ms ease;
+}
+
+@keyframes signal-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .landing-shell,
 .app-screen {
   display: grid;
@@ -1063,6 +1280,27 @@ body[data-theme="dark"] .section-loading-card {
 body[data-theme="dark"] .mirror-guide-pill {
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 720px) {
+  .signal-page-hero,
+  .signal-list-row {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .signal-page-toolbar,
+  .signal-modal-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .signal-list-side {
+    justify-items: start;
+  }
+
+  .signal-list {
+    max-height: none;
+  }
 }
 
 .admin-user-actions {

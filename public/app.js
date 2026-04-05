@@ -14,6 +14,7 @@ const EXCHANGE_OPTIONS = [
 ];
 const WATCHLIST_REFRESH_INTERVAL_MS = 15000;
 const TRADE_REFRESH_INTERVAL_MS = 10000;
+const SIGNAL_CHART_REFRESH_INTERVAL_MS = 5000;
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
 const STABLECOIN_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD"];
 const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
@@ -96,6 +97,15 @@ const state = {
   socketRetry: null,
   socketRefreshTimer: null,
   tradeRefreshTimer: null,
+  signalFeed: {
+    pairs: [],
+    timeframe: "5m",
+    signals: [],
+    streamConnected: false,
+    statusMessage: "Connecting to the live signal engine...",
+    notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+    audioUnlocked: false,
+  },
 };
 
 const app = document.getElementById("app");
@@ -103,6 +113,10 @@ const topbarActions = document.getElementById("topbar-actions");
 
 let watchlistRefreshPromise = null;
 let tradeRefreshPromise = null;
+let signalEventSource = null;
+let signalChartRefreshTimer = null;
+let signalAlertAudio = null;
+const seenSignalIds = new Set();
 
 function normalizeUserPayload(user) {
   if (!user) {
@@ -137,6 +151,25 @@ function getActiveExchange() {
 function setSelectedExchange(exchange) {
   state.selectedExchange = EXCHANGE_OPTIONS.some((item) => item.id === exchange) ? exchange : "bybit";
   localStorage.setItem("tradeflow-selected-exchange", state.selectedExchange);
+}
+
+function getSignalAlertAudio() {
+  if (!signalAlertAudio) {
+    signalAlertAudio = new Audio("/sounds/alert.mp3");
+    signalAlertAudio.preload = "auto";
+  }
+  return signalAlertAudio;
+}
+
+function updateSignalNotificationPermission() {
+  state.signalFeed.notificationPermission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+}
+
+function mergeSignalList(signals = []) {
+  return [...signals]
+    .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+    .filter((signal, index, list) => list.findIndex((item) => item.id === signal.id) === index)
+    .slice(0, 80);
 }
 
 async function api(path, options = {}) {
@@ -197,11 +230,19 @@ function clearError() {
 }
 
 function showActionModal(modal) {
+  if (state.actionModal?.type === "signal-chart" && window.SignalPage?.destroyActiveChart) {
+    window.SignalPage.destroyActiveChart();
+  }
+  stopSignalChartRefreshTimer();
   state.actionModal = modal;
   render();
 }
 
 function clearActionModal() {
+  stopSignalChartRefreshTimer();
+  if (window.SignalPage?.destroyActiveChart) {
+    window.SignalPage.destroyActiveChart();
+  }
   state.actionModal = null;
   render();
 }
@@ -261,6 +302,237 @@ function formatUsdtUnit(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} USDT`;
+}
+
+function getSignalById(signalId) {
+  return (state.signalFeed.signals || []).find((signal) => signal.id === signalId) || null;
+}
+
+function scrollSignalListToTop() {
+  if (state.activeTab !== "signals") {
+    return;
+  }
+  requestAnimationFrame(() => {
+    const host = document.getElementById("signal-feed-list");
+    if (host) {
+      host.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+}
+
+async function unlockSignalAudio() {
+  const audio = getSignalAlertAudio();
+  audio.muted = true;
+  try {
+    audio.currentTime = 0;
+    await audio.play();
+    audio.pause();
+    audio.currentTime = 0;
+    audio.muted = false;
+    state.signalFeed.audioUnlocked = true;
+    render();
+    return true;
+  } catch {
+    audio.muted = false;
+    return false;
+  }
+}
+
+async function enableSignalAlerts() {
+  updateSignalNotificationPermission();
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    try {
+      await Notification.requestPermission();
+    } catch {
+      // Ignore permission prompt failures and keep audio alert path available.
+    }
+  }
+  updateSignalNotificationPermission();
+  await unlockSignalAudio();
+  render();
+  showNotice("Signal alerts enabled");
+}
+
+function announceSignal(signal) {
+  if (!signal || seenSignalIds.has(signal.id)) {
+    return;
+  }
+
+  seenSignalIds.add(signal.id);
+
+  if (state.signalFeed.audioUnlocked) {
+    const audio = getSignalAlertAudio();
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  }
+
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    const strategyLabel = String(signal.strategyType || "BUY").replace(/_/g, "-");
+    new Notification(`${signal.pair} BUY signal`, {
+      body: `${strategyLabel} at ${formatNumber(signal.entryPrice, 6)} | Confidence ${Math.round(Number(signal.confidence || 0))}%`,
+      icon: "/netruefx-logo.png",
+    });
+  }
+
+  scrollSignalListToTop();
+}
+
+function applySignalSnapshot(payload, options = {}) {
+  const silent = !!options.silent;
+  const nextSignals = mergeSignalList(payload.signals || []);
+  if (silent) {
+    nextSignals.forEach((signal) => seenSignalIds.add(signal.id));
+  }
+
+  state.signalFeed = {
+    ...state.signalFeed,
+    pairs: payload.pairs || state.signalFeed.pairs,
+    timeframe: payload.timeframe || state.signalFeed.timeframe,
+    signals: nextSignals,
+    statusMessage: nextSignals.length ? "New BUY signals are sorted with the freshest setup first." : "Scanning the market for the next BUY setup.",
+  };
+}
+
+async function loadSignalsSnapshot(options = {}) {
+  if (!state.user) {
+    return;
+  }
+
+  const payload = await api("/api/signals");
+  applySignalSnapshot(payload, options);
+  render();
+}
+
+function disconnectSignalStream() {
+  if (signalEventSource) {
+    signalEventSource.close();
+    signalEventSource = null;
+  }
+  state.signalFeed = {
+    ...state.signalFeed,
+    streamConnected: false,
+  };
+}
+
+function connectSignalStream() {
+  if (!state.user || signalEventSource) {
+    return;
+  }
+
+  signalEventSource = new EventSource("/api/signals/stream", { withCredentials: true });
+
+  signalEventSource.onopen = () => {
+    state.signalFeed = {
+      ...state.signalFeed,
+      streamConnected: true,
+      statusMessage: "Live Binance signal stream connected.",
+    };
+    render();
+  };
+
+  signalEventSource.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      if (payload.type === "snapshot") {
+        applySignalSnapshot(payload.payload || {}, { silent: true });
+      }
+      if (payload.type === "status") {
+        state.signalFeed = {
+          ...state.signalFeed,
+          streamConnected: !!payload.payload?.ok,
+          statusMessage: payload.payload?.message || state.signalFeed.statusMessage,
+        };
+      }
+      if (payload.type === "signal" && payload.payload) {
+        const signal = payload.payload;
+        state.signalFeed = {
+          ...state.signalFeed,
+          signals: mergeSignalList([signal, ...(state.signalFeed.signals || [])]),
+          statusMessage: `${signal.pair} triggered a fresh ${String(signal.strategyType || "").replace(/_/g, "-")} BUY setup.`,
+        };
+        announceSignal(signal);
+      }
+      render();
+    } catch {
+      state.signalFeed = {
+        ...state.signalFeed,
+        streamConnected: false,
+        statusMessage: "Signal stream payload could not be parsed.",
+      };
+      render();
+    }
+  };
+
+  signalEventSource.onerror = () => {
+    state.signalFeed = {
+      ...state.signalFeed,
+      streamConnected: false,
+      statusMessage: "Signal stream reconnecting...",
+    };
+    render();
+  };
+}
+
+function stopSignalChartRefreshTimer() {
+  clearInterval(signalChartRefreshTimer);
+  signalChartRefreshTimer = null;
+}
+
+function startSignalChartRefreshTimer() {
+  stopSignalChartRefreshTimer();
+  if (state.actionModal?.type !== "signal-chart") {
+    return;
+  }
+  signalChartRefreshTimer = setInterval(() => {
+    void refreshSignalChartModal(true);
+  }, SIGNAL_CHART_REFRESH_INTERVAL_MS);
+}
+
+async function refreshSignalChartModal(silent = false) {
+  if (state.actionModal?.type !== "signal-chart") {
+    return;
+  }
+
+  const signal = getSignalById(state.actionModal.signalId);
+  if (!signal) {
+    return;
+  }
+
+  try {
+    const payload = await api(`/api/signals/chart?pair=${encodeURIComponent(signal.pair)}&signalId=${encodeURIComponent(signal.id)}`);
+    if (state.actionModal?.type !== "signal-chart" || state.actionModal.signalId !== signal.id) {
+      return;
+    }
+    state.actionModal = {
+      ...state.actionModal,
+      chartPayload: payload,
+      chartError: null,
+    };
+    render();
+  } catch (error) {
+    if (!silent && state.actionModal?.type === "signal-chart") {
+      state.actionModal = {
+        ...state.actionModal,
+        chartError: error.message,
+      };
+      render();
+    }
+  }
+}
+
+function openSignalModal(signalId) {
+  const signal = getSignalById(signalId);
+  if (!signal) {
+    showError("Signal details could not be found.");
+    return;
+  }
+  showActionModal({
+    type: "signal-chart",
+    signalId,
+    chartPayload: null,
+    chartError: null,
+  });
+  void refreshSignalChartModal();
 }
 
 function escapeHtml(value) {
@@ -844,6 +1116,18 @@ function renderActionModal() {
     return "";
   }
 
+  if (state.actionModal.type === "signal-chart") {
+    const signal = getSignalById(state.actionModal.signalId);
+    return window.SignalPage?.renderSignalChartModal
+      ? window.SignalPage.renderSignalChartModal({
+          signal,
+          chartPayload: state.actionModal.chartPayload,
+          error: state.actionModal.chartError,
+          formatNumber,
+        })
+      : "";
+  }
+
   if (state.actionModal.type === "deposit" || state.actionModal.type === "withdraw") {
     const isDeposit = state.actionModal.type === "deposit";
     const title = isDeposit ? "Deposit Naira" : "Withdraw Naira";
@@ -1192,6 +1476,14 @@ function bindModalActions() {
   const actionCancelButton = document.getElementById("action-modal-cancel-btn");
   if (actionCancelButton) {
     actionCancelButton.addEventListener("click", clearActionModal);
+  }
+
+  if (state.actionModal?.type === "signal-chart" && state.actionModal.chartPayload && window.SignalPage?.mountSignalChart) {
+    window.SignalPage.mountSignalChart({
+      payload: state.actionModal.chartPayload,
+      theme: state.theme,
+    });
+    startSignalChartRefreshTimer();
   }
 
   const confirmSellButton = document.getElementById("confirm-sell-btn");
@@ -1819,11 +2111,23 @@ async function loadSavedExchangeSettings(exchange) {
 async function loadDashboardData() {
   if (!state.user) {
     disconnectWatchSocket();
+    disconnectSignalStream();
+    stopSignalChartRefreshTimer();
     stopTradeRefreshTimer();
     state.loadingWatchlist = false;
     render();
     return;
   }
+
+  updateSignalNotificationPermission();
+  connectSignalStream();
+  void loadSignalsSnapshot({ silent: true }).catch(() => {
+    state.signalFeed = {
+      ...state.signalFeed,
+      statusMessage: "Signal snapshot will appear as soon as the stream responds.",
+    };
+    render();
+  });
 
   state.loadingWatchlist = !state.watchlistSeed.length;
   state.loadingAccount = !!(state.user.exchangeConnected && !state.balances.length);
@@ -2897,11 +3201,13 @@ function renderSettingsPane() {
 }
 
 function renderSignalsPane() {
-  return `
-    <div data-ai-signal-host>${renderAiSignalCard()}</div>
-    <div data-signal-chart-host>${renderSignalChartSection()}</div>
-    ${renderWatchlistSection()}
-  `;
+  return window.SignalPage?.renderSignalPage
+    ? window.SignalPage.renderSignalPage({
+        signalFeed: state.signalFeed,
+        formatNumber,
+        formatUsdtUnit,
+      })
+    : `<section class="mobile-card"><p class="muted-copy">Signal dashboard is loading...</p></section>`;
 }
 
 function renderHistoryContent() {
@@ -3065,8 +3371,7 @@ function renderDashboardShell() {
 function bindDashboardActions() {
   bindHistoryActions();
   bindAdminUserDisclosureToggles();
-  bindSignalCardActions();
-  bindSignalChartActions();
+  bindSignalFeedActions();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -3213,7 +3518,13 @@ function bindDashboardActions() {
     logoutButton.addEventListener("click", async () => {
       await api("/api/auth/logout", { method: "POST", body: "{}" });
       disconnectWatchSocket();
+      disconnectSignalStream();
+      stopSignalChartRefreshTimer();
+      if (window.SignalPage?.destroyActiveChart) {
+        window.SignalPage.destroyActiveChart();
+      }
       stopTradeRefreshTimer();
+      seenSignalIds.clear();
       state.user = null;
       state.activeTab = "home";
       state.actionModal = null;
@@ -3242,6 +3553,15 @@ function bindDashboardActions() {
         loading: false,
       };
       state.tradeMarketMap = {};
+      state.signalFeed = {
+        pairs: [],
+        timeframe: "5m",
+        signals: [],
+        streamConnected: false,
+        statusMessage: "Connecting to the live signal engine...",
+        notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+        audioUnlocked: false,
+      };
       state.expandedTradeIds = [];
       state.expandedPendingOrderIds = [];
       state.expandedAdminUserIds = [];
@@ -3281,6 +3601,23 @@ function bindDashboardActions() {
   document.querySelectorAll("[data-admin-delete-user]").forEach((button) => {
     button.addEventListener("click", () => {
       deleteAdminUser(button.dataset.adminDeleteUser, button.dataset.adminUserName || "this user");
+    });
+  });
+}
+
+function bindSignalFeedActions() {
+  const enableAlertsButton = document.getElementById("signal-alert-enable-btn");
+  if (enableAlertsButton) {
+    enableAlertsButton.addEventListener("click", () => {
+      void enableSignalAlerts().catch(() => {
+        showError("The browser blocked audio or notification permission for signal alerts.");
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-open-signal]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openSignalModal(button.dataset.openSignal);
     });
   });
 }
@@ -3545,13 +3882,24 @@ async function bootstrap() {
       await loadDashboardData();
     } else {
       disconnectWatchSocket();
+      disconnectSignalStream();
+      stopSignalChartRefreshTimer();
+      if (window.SignalPage?.destroyActiveChart) {
+        window.SignalPage.destroyActiveChart();
+      }
       stopTradeRefreshTimer();
       startSplashSequence();
     }
   } catch {
     state.user = null;
     disconnectWatchSocket();
+    disconnectSignalStream();
+    stopSignalChartRefreshTimer();
+    if (window.SignalPage?.destroyActiveChart) {
+      window.SignalPage.destroyActiveChart();
+    }
     stopTradeRefreshTimer();
+    seenSignalIds.clear();
     startSplashSequence();
   } finally {
     endLoading();

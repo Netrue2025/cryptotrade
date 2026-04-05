@@ -29,6 +29,8 @@ loadEnvFile();
 const { loadDb, saveDb, ensureAdminUser, sanitizeUser, shouldUseMongo } = require("./lib/db");
 const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
 const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
+const { SignalEngine } = require("./signals/engine");
+const { sendTelegramAlert } = require("./services/telegram");
 
 const DEFAULT_PORT = 3000;
 const MAX_PORT_RETRIES = 10;
@@ -53,8 +55,13 @@ const MARKET_WATCHLIST_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "X
 const WATCHLIST_CACHE_TTL_MS = 1000 * 10;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 3;
 const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_MS / 1000);
+const SIGNAL_STREAM_KEEPALIVE_MS = 20_000;
 
 let db = null;
+const signalEngine = new SignalEngine();
+signalEngine.on("signal", (signal) => {
+  void sendTelegramAlert(signal);
+});
 
 const fiatRateCache = {
   usdtNgnRate: null,
@@ -294,6 +301,10 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
 function sendText(res, statusCode, payload, contentType = "text/plain; charset=utf-8") {
   res.writeHead(statusCode, { "Content-Type": contentType });
   res.end(payload);
+}
+
+function writeSse(res, payload) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function getSession(req) {
@@ -2235,6 +2246,89 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/signals") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+    sendJson(res, 200, signalEngine.getSnapshot());
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/signals/chart") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    const pair = String(url.searchParams.get("pair") || "").trim().toUpperCase();
+    const signalId = String(url.searchParams.get("signalId") || "").trim();
+    if (!pair) {
+      sendJson(res, 400, { error: "Pair is required." });
+      return true;
+    }
+
+    const snapshot = signalEngine.getChartSnapshot(pair, signalId);
+    if (!snapshot) {
+      sendJson(res, 404, { error: "No signal chart data found for that pair." });
+      return true;
+    }
+
+    sendJson(res, 200, snapshot);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/signals/stream") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    writeSse(res, {
+      type: "snapshot",
+      payload: signalEngine.getSnapshot(),
+    });
+
+    const onSignal = (signal) => {
+      writeSse(res, {
+        type: "signal",
+        payload: signal,
+      });
+    };
+
+    const onStatus = (status) => {
+      writeSse(res, {
+        type: "status",
+        payload: status,
+      });
+    };
+
+    signalEngine.on("signal", onSignal);
+    signalEngine.on("status", onStatus);
+
+    const keepAlive = setInterval(() => {
+      writeSse(res, {
+        type: "heartbeat",
+        payload: { timestamp: Date.now() },
+      });
+    }, SIGNAL_STREAM_KEEPALIVE_MS);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      signalEngine.off("signal", onSignal);
+      signalEngine.off("status", onStatus);
+      res.end();
+    });
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/market/chart") {
     const symbol = String(url.searchParams.get("symbol") || "").trim().toUpperCase();
     const interval = String(url.searchParams.get("interval") || "15m").trim();
@@ -3075,6 +3169,7 @@ function serveStatic(req, res, url) {
       ".css": "text/css; charset=utf-8",
       ".js": "application/javascript; charset=utf-8",
       ".json": "application/json; charset=utf-8",
+      ".mp3": "audio/mpeg",
     }[ext] || "application/octet-stream";
 
   res.writeHead(200, { "Content-Type": contentType });
@@ -3101,6 +3196,9 @@ async function startServer() {
   db = await loadDb();
   ensureAdminUser(db);
   await saveDb(db);
+  signalEngine.start().catch((error) => {
+    console.error("Signal engine startup failed:", error.message);
+  });
 
   const listeningPort = await listenOnAvailablePort(server, port);
   const storageMode = shouldUseMongo() ? "MongoDB" : "local JSON file";
