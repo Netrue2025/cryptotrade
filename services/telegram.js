@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { disableBrokenLocalProxyEnv } = require("../lib/network");
 
 const sentSignalKeys = new Set();
 
@@ -125,6 +126,8 @@ function buildTelegramMessage(signal) {
 }
 
 async function sendTelegramAlert(signal) {
+  disableBrokenLocalProxyEnv(console, "Telegram signal alerts");
+
   const token = String(process.env.TELEGRAM_SIGNAL_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "").trim();
   const chatId = String(process.env.TELEGRAM_SIGNAL_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "").trim();
 
@@ -157,6 +160,7 @@ async function sendTelegramAlert(signal) {
       },
       {
         timeout: 15000,
+        proxy: false,
       }
     );
 

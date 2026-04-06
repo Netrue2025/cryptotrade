@@ -62,6 +62,7 @@ const SIGNAL_STREAM_KEEPALIVE_MS = 20_000;
 const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
 const ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 1000 * 60;
 const TRADE_RECONCILE_BACKGROUND_INTERVAL_MS = 15_000;
+const SERVICE_RETRY_INTERVAL_MS = 60_000;
 
 let db = null;
 const signalEngine = new SignalEngine();
@@ -86,6 +87,8 @@ const fiatRateCache = {
 };
 
 const watchlistCache = new Map();
+let signalEngineStartPromise = null;
+let tradeListenerStartPromise = null;
 
 function persist() {
   if (!db) {
@@ -116,6 +119,56 @@ function sweepExpiredSignals() {
     console.log(`Expired ${expiredSignals.length} signal${expiredSignals.length === 1 ? "" : "s"} after 24 hours.`);
   }
   return expiredSignals;
+}
+
+async function ensureSignalEngineRunning(force = false) {
+  if (signalEngine.started && !force) {
+    return true;
+  }
+
+  if (signalEngineStartPromise) {
+    return signalEngineStartPromise;
+  }
+
+  signalEngineStartPromise = signalEngine.start()
+    .then(() => {
+      console.log(`Signal engine is running on ${signalEngine.getTimeframe()}.`);
+      return true;
+    })
+    .catch((error) => {
+      console.error("Signal engine startup failed:", error.message);
+      return false;
+    })
+    .finally(() => {
+      signalEngineStartPromise = null;
+    });
+
+  return signalEngineStartPromise;
+}
+
+async function ensureTradeListenerRunning(force = false) {
+  if (tradeListener.started && !force) {
+    return true;
+  }
+
+  if (tradeListenerStartPromise) {
+    return tradeListenerStartPromise;
+  }
+
+  tradeListenerStartPromise = tradeListener.start()
+    .then(() => {
+      console.log("Telegram trade listener is running.");
+      return true;
+    })
+    .catch((error) => {
+      console.error("Telegram trade listener startup failed:", error.message);
+      return false;
+    })
+    .finally(() => {
+      tradeListenerStartPromise = null;
+    });
+
+  return tradeListenerStartPromise;
 }
 
 function getPreferredExchange(user) {
@@ -2293,18 +2346,20 @@ async function handleApi(req, res, url) {
       const exchange = currentUser ? getUserMarketExchange(currentUser) : "bybit";
       const testnet = !!getExchangeAccount(currentUser, exchange)?.testnet;
       const [prices, stats] = await Promise.all([
-        Promise.all(symbols.map((symbol) => getTickerPrice(symbol, testnet, exchange))),
+        getTickerPrices(testnet, exchange),
         getTicker24hr(symbols, testnet, exchange),
       ]);
 
+      const priceArray = Array.isArray(prices) ? prices : [prices];
+      const priceMap = new Map(priceArray.map((item) => [item.symbol, item]));
       const statsArray = Array.isArray(stats) ? stats : [stats];
       const statsMap = new Map(statsArray.map((item) => [item.symbol, item]));
-      const payload = prices.map((item) => ({
-        symbol: item.symbol,
-        price: Number(item.price || 0),
-        changePercent: Number(statsMap.get(item.symbol)?.priceChangePercent || 0),
-        volume24h: Number(statsMap.get(item.symbol)?.volume24h || 0),
-        turnover24h: Number(statsMap.get(item.symbol)?.turnover24h || 0),
+      const payload = symbols.map((symbol) => ({
+        symbol,
+        price: Number(priceMap.get(symbol)?.price || 0),
+        changePercent: Number(statsMap.get(symbol)?.priceChangePercent || 0),
+        volume24h: Number(statsMap.get(symbol)?.volume24h || 0),
+        turnover24h: Number(statsMap.get(symbol)?.turnover24h || 0),
       }));
       sendJson(res, 200, { prices: payload });
     } catch (error) {
@@ -3356,16 +3411,16 @@ async function startServer() {
     signalTimeframe: signalEngine.getTimeframe(),
   };
   await saveDb(db);
-  await tradeListener.start().catch((error) => {
-    console.error("Telegram trade listener startup failed:", error.message);
-  });
-  signalEngine.start().catch((error) => {
-    console.error("Signal engine startup failed:", error.message);
-  });
+  await ensureTradeListenerRunning(true);
+  await ensureSignalEngineRunning(true);
   void startTradeReconciliation(true);
   setInterval(() => {
     void startTradeReconciliation();
   }, TRADE_RECONCILE_BACKGROUND_INTERVAL_MS);
+  setInterval(() => {
+    void ensureTradeListenerRunning();
+    void ensureSignalEngineRunning();
+  }, SERVICE_RETRY_INTERVAL_MS);
   setInterval(() => {
     sweepExpiredSignals();
   }, SIGNAL_EXPIRY_SWEEP_MS);

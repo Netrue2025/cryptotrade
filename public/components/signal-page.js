@@ -37,7 +37,7 @@
     const deleting = !!signalFeed?.deleting;
     const switchingTimeframe = !!signalFeed?.switchingTimeframe;
     const allSelected = !!signals.length && selectedIds.length === signals.length;
-    const supportedTimeframes = signalFeed?.supportedTimeframes?.length ? signalFeed.supportedTimeframes : ["30m", "1h"];
+    const supportedTimeframes = signalFeed?.supportedTimeframes?.length ? signalFeed.supportedTimeframes : ["5m", "30m", "1h"];
 
     return `
       <section class="signal-page-shell">

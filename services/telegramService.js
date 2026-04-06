@@ -1,5 +1,6 @@
 const TelegramBot = require("node-telegram-bot-api");
 
+const { disableBrokenLocalProxyEnv } = require("../lib/network");
 const { defaultPreferences } = require("../models/subscriberModel");
 
 function formatPreferenceLabel(key, enabled) {
@@ -56,6 +57,8 @@ class TelegramService {
       }
       return this;
     }
+
+    disableBrokenLocalProxyEnv(this.logger, "Telegram trade bot");
 
     if (this.subscriberModel?.init) {
       await this.subscriberModel.init();

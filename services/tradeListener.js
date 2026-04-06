@@ -175,9 +175,14 @@ class TradeListener {
     this.binanceTargetHit = false;
     this.bybitTargetHit = false;
     this.resetTask = null;
+    this.started = false;
   }
 
   async start() {
+    if (this.started) {
+      return this;
+    }
+
     if (this.telegramService?.start) {
       await this.telegramService.start();
     }
@@ -187,6 +192,9 @@ class TradeListener {
         this.resetDailyState();
       });
     }
+
+    this.started = true;
+    return this;
   }
 
   stop() {
@@ -194,6 +202,7 @@ class TradeListener {
       this.resetTask.stop();
       this.resetTask = null;
     }
+    this.started = false;
   }
 
   resetDailyState() {

@@ -21,6 +21,15 @@ function getAppMongoUri() {
   return String(process.env.MONGODB_URI || "").trim();
 }
 
+function getMongoClientOptions() {
+  return {
+    serverSelectionTimeoutMS: 15000,
+    connectTimeoutMS: 15000,
+    socketTimeoutMS: 30000,
+    maxPoolSize: 5,
+  };
+}
+
 function defaultPreferences() {
   return {
     binance: true,
@@ -67,7 +76,7 @@ class SubscriberModel {
         }
 
         if (!this.clientPromise) {
-          this.clientPromise = MongoClient.connect(this.mongoUri, {});
+          this.clientPromise = MongoClient.connect(this.mongoUri, getMongoClientOptions());
         }
         const client = await this.clientPromise;
         return client.db(this.dbName).collection(this.collectionName);

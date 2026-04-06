@@ -16,7 +16,7 @@ const SIGNAL_PAIRS = [
   "LTCUSDT",
 ];
 
-const SUPPORTED_SIGNAL_TIMEFRAMES = ["30m", "1h"];
+const SUPPORTED_SIGNAL_TIMEFRAMES = ["5m", "30m", "1h"];
 const SIGNAL_TIMEFRAME = SUPPORTED_SIGNAL_TIMEFRAMES.includes(String(process.env.SIGNAL_TIMEFRAME || "").trim())
   ? String(process.env.SIGNAL_TIMEFRAME || "").trim()
   : "30m";

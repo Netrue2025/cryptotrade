@@ -12,8 +12,8 @@ const EXCHANGE_OPTIONS = [
   { id: "bybit", label: "Bybit" },
   { id: "binance", label: "Binance" },
 ];
-const WATCHLIST_REFRESH_INTERVAL_MS = 15000;
-const TRADE_REFRESH_INTERVAL_MS = 10000;
+const WATCHLIST_REFRESH_INTERVAL_MS = 30000;
+const TRADE_REFRESH_INTERVAL_MS = 30000;
 const SIGNAL_CHART_REFRESH_INTERVAL_MS = 5000;
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
 const STABLECOIN_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD"];
@@ -100,12 +100,12 @@ const state = {
   signalFeed: {
     pairs: [],
     timeframe: "30m",
-    supportedTimeframes: ["30m", "1h"],
+    supportedTimeframes: ["5m", "30m", "1h"],
     signals: [],
     streamConnected: false,
     statusMessage: "Connecting to the live signal engine...",
     notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-    audioUnlocked: false,
+    audioUnlocked: true,
     selectedIds: [],
     deleting: false,
     switchingTimeframe: false,
@@ -137,6 +137,18 @@ function normalizeUserPayload(user) {
 function applyTheme() {
   document.body.dataset.theme = state.theme;
   localStorage.setItem("tradeflow-theme", state.theme);
+}
+
+function isDocumentVisible() {
+  return typeof document === "undefined" || !document.hidden;
+}
+
+function shouldRefreshWatchlistLive() {
+  return !!state.user && isDocumentVisible() && state.activeTab === "home";
+}
+
+function shouldRefreshTradeLive() {
+  return !!state.user && isDocumentVisible() && ["home", "history"].includes(state.activeTab);
 }
 
 function getExchangeLabel(exchange) {
@@ -2048,6 +2060,9 @@ function connectWatchSocket() {
   hydrateWatchlistFromSeed();
   refreshWatchlistDom();
   state.socketRefreshTimer = setInterval(() => {
+    if (!shouldRefreshWatchlistLive()) {
+      return;
+    }
     void refreshWatchlistFeed();
   }, WATCHLIST_REFRESH_INTERVAL_MS);
 }
@@ -2060,6 +2075,9 @@ function disconnectWatchSocket() {
 function startTradeRefreshTimer() {
   clearInterval(state.tradeRefreshTimer);
   state.tradeRefreshTimer = setInterval(() => {
+    if (!shouldRefreshTradeLive()) {
+      return;
+    }
     void refreshDashboardLiveData();
   }, TRADE_REFRESH_INTERVAL_MS);
 }
@@ -2310,7 +2328,9 @@ async function loadDashboardData() {
   state.revealedAdminPasswordIds = state.revealedAdminPasswordIds.filter((id) => adminUserIds.has(id));
   syncHistorySelection();
   render();
-  void refreshTradeMarketData();
+  if (shouldRefreshTradeLive()) {
+    void refreshTradeMarketData();
+  }
   startTradeRefreshTimer();
   void accountPromise;
   void settingsPromise;
@@ -3675,12 +3695,12 @@ function bindDashboardActions() {
       state.signalFeed = {
         pairs: [],
         timeframe: "30m",
-        supportedTimeframes: ["30m", "1h"],
+        supportedTimeframes: ["5m", "30m", "1h"],
         signals: [],
         streamConnected: false,
         statusMessage: "Connecting to the live signal engine...",
         notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-        audioUnlocked: false,
+        audioUnlocked: true,
         selectedIds: [],
         deleting: false,
         switchingTimeframe: false,
