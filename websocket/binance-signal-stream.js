@@ -1,7 +1,8 @@
 const EventEmitter = require("node:events");
 const WebSocket = require("ws");
 
-const { getCandles } = require("../lib/binance");
+const { getCandles: getBinanceCandles } = require("../lib/binance");
+const { getCandles: getBybitCandles } = require("../lib/bybit");
 
 function normalizeKlinePayload(payload) {
   const kline = payload?.data?.k || payload?.k || null;
@@ -37,7 +38,35 @@ class BinanceSignalStream extends EventEmitter {
   async seedCandles(limit) {
     const entries = await Promise.allSettled(
       this.pairs.map(async (pair) => {
-        const candles = await getCandles(pair, this.interval, limit, false);
+        let candles = [];
+
+        try {
+          candles = await getBinanceCandles(pair, this.interval, limit, false);
+        } catch (error) {
+          this.emit("status", {
+            ok: false,
+            message: `Binance history seed failed for ${pair}. Falling back to Bybit candles.`,
+          });
+        }
+
+        if (!Array.isArray(candles) || candles.length < Math.min(Number(limit || 0), 60)) {
+          try {
+            const fallbackCandles = await getBybitCandles(pair, this.interval, limit, false);
+            if (Array.isArray(fallbackCandles) && fallbackCandles.length > candles.length) {
+              candles = fallbackCandles;
+              this.emit("status", {
+                ok: true,
+                message: `Signal history seeded for ${pair} with Bybit fallback candles.`,
+              });
+            }
+          } catch (error) {
+            this.emit("status", {
+              ok: false,
+              message: `Signal history fallback failed for ${pair}: ${error.message || "Unknown error."}`,
+            });
+          }
+        }
+
         return [pair, candles];
       })
     );

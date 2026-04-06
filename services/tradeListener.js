@@ -221,7 +221,20 @@ class TradeListener {
   }
 
   async broadcast(message, type, options = {}) {
-    return this.broadcaster.broadcast(message, type, options);
+    const result = await this.broadcaster.broadcast(message, type, options);
+    const exchangeLabel = options.exchange ? getExchangeLabel(options.exchange) : String(type || "trade");
+
+    if (result.disabled) {
+      this.logger.warn(`Telegram broadcast skipped for ${exchangeLabel}: bot or subscriber store is disabled.`);
+    } else if (!result.sent && !result.failed) {
+      this.logger.warn(`Telegram broadcast had no active recipients for ${exchangeLabel}.`);
+    } else {
+      this.logger.log(
+        `Telegram broadcast for ${exchangeLabel}: sent ${result.sent}, skipped ${result.skipped}, failed ${result.failed}.`
+      );
+    }
+
+    return result;
   }
 
   async handleTradeCreated(trade) {

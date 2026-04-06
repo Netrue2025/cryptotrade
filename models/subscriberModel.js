@@ -1,4 +1,5 @@
 const { MongoClient } = require("mongodb");
+const { getMongoCollectionByName } = require("../lib/db");
 
 const DEFAULT_COLLECTION_NAME = "telegram_subscribers";
 
@@ -14,6 +15,10 @@ function getMongoDbName(uri) {
 
 function getCollectionName() {
   return String(process.env.TELEGRAM_SUBSCRIBERS_COLLECTION || DEFAULT_COLLECTION_NAME).trim() || DEFAULT_COLLECTION_NAME;
+}
+
+function getAppMongoUri() {
+  return String(process.env.MONGODB_URI || "").trim();
 }
 
 function defaultPreferences() {
@@ -43,6 +48,10 @@ class SubscriberModel {
     return !!this.mongoUri;
   }
 
+  shouldUseSharedAppMongo() {
+    return !!this.mongoUri && this.mongoUri === getAppMongoUri();
+  }
+
   async getCollection() {
     if (!this.isEnabled()) {
       throw new Error("MongoDB is not configured for Telegram subscribers.");
@@ -50,6 +59,13 @@ class SubscriberModel {
 
     if (!this.collectionPromise) {
       this.collectionPromise = (async () => {
+        if (this.shouldUseSharedAppMongo()) {
+          const collection = await getMongoCollectionByName(this.collectionName);
+          if (collection) {
+            return collection;
+          }
+        }
+
         if (!this.clientPromise) {
           this.clientPromise = MongoClient.connect(this.mongoUri, {});
         }

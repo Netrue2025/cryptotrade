@@ -61,6 +61,7 @@ const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_MS / 1000);
 const SIGNAL_STREAM_KEEPALIVE_MS = 20_000;
 const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
 const ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 1000 * 60;
+const TRADE_RECONCILE_BACKGROUND_INTERVAL_MS = 15_000;
 
 let db = null;
 const signalEngine = new SignalEngine();
@@ -3361,6 +3362,10 @@ async function startServer() {
   signalEngine.start().catch((error) => {
     console.error("Signal engine startup failed:", error.message);
   });
+  void startTradeReconciliation(true);
+  setInterval(() => {
+    void startTradeReconciliation();
+  }, TRADE_RECONCILE_BACKGROUND_INTERVAL_MS);
   setInterval(() => {
     sweepExpiredSignals();
   }, SIGNAL_EXPIRY_SWEEP_MS);
