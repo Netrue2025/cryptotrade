@@ -60,6 +60,7 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 3;
 const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_MS / 1000);
 const SIGNAL_STREAM_KEEPALIVE_MS = 20_000;
 const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
+const ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 1000 * 60;
 
 let db = null;
 const signalEngine = new SignalEngine();
@@ -287,6 +288,38 @@ function cacheAccountSnapshot(account, snapshot, exchange = getAccountExchange(a
 
 function getCachedAccountSnapshot(account, exchange = getAccountExchange(account)) {
   return sanitizeStoredAccountSnapshot(account?.lastSnapshot, exchange);
+}
+
+function isCachedAccountSnapshotFresh(snapshot, ttlMs = ACCOUNT_SNAPSHOT_CACHE_TTL_MS) {
+  if (!snapshot?.cachedAt) {
+    return false;
+  }
+
+  const cachedAt = Date.parse(snapshot.cachedAt);
+  if (!Number.isFinite(cachedAt)) {
+    return false;
+  }
+
+  return Date.now() - cachedAt < ttlMs;
+}
+
+function summarizeWalletDetailsFromSnapshot(snapshot, exchange, label, fallbackRate = 0) {
+  if (!snapshot) {
+    return null;
+  }
+
+  const balances = Array.isArray(snapshot.balances) ? snapshot.balances : [];
+  const derivedRate = Number(snapshot.usdtNgnRate || fallbackRate || 0);
+  const summary = summarizeWalletBalances(balances, derivedRate);
+  return {
+    exchange,
+    label,
+    connected: true,
+    lastValidatedAt: snapshot.updatedAt || snapshot.cachedAt || null,
+    error: null,
+    stale: !!snapshot.stale,
+    ...summary,
+  };
 }
 
 function parseCookies(req) {
@@ -719,34 +752,24 @@ async function getConnectedWalletDetails(user, usdtNgnRate) {
         return null;
       }
 
-      try {
-        const [accountInfo, tickers] = await Promise.all([
-          getAccountInfo(account, exchange.id),
-          getTickerPrices(account.testnet, exchange.id),
-        ]);
-        const balances = enrichBalancesWithUsdtValue(toSafeBalances(accountInfo), tickers);
-        const summary = summarizeWalletBalances(balances, usdtNgnRate);
-        return {
-          exchange: exchange.id,
-          label: exchange.label,
-          connected: true,
-          lastValidatedAt: account.lastValidatedAt || null,
-          error: null,
-          ...summary,
-        };
-      } catch (error) {
-        return {
-          exchange: exchange.id,
-          label: exchange.label,
-          connected: true,
-          lastValidatedAt: account.lastValidatedAt || null,
-          error: error.message,
-          totalUsdt: 0,
-          totalNgn: 0,
-          assetCount: 0,
-          topAssets: [],
-        };
+      const cachedSnapshot = getCachedAccountSnapshot(account, exchange.id);
+      const cachedSummary = summarizeWalletDetailsFromSnapshot(cachedSnapshot, exchange.id, exchange.label, usdtNgnRate);
+      if (cachedSummary) {
+        return cachedSummary;
       }
+
+      return {
+        exchange: exchange.id,
+        label: exchange.label,
+        connected: true,
+        lastValidatedAt: account.lastValidatedAt || null,
+        error: "Wallet snapshot has not been loaded yet.",
+        totalUsdt: 0,
+        totalNgn: 0,
+        assetCount: 0,
+        topAssets: [],
+        stale: true,
+      };
     })
   ).then((items) => items.filter(Boolean));
 }
@@ -2532,6 +2555,12 @@ async function handleApi(req, res, url) {
     }
 
     const cachedSnapshot = getCachedAccountSnapshot(account, exchange);
+    const forceRefresh = String(url.searchParams.get("refresh") || "").trim() === "1";
+    if (!forceRefresh && cachedSnapshot && isCachedAccountSnapshotFresh(cachedSnapshot)) {
+      sendJson(res, 200, cachedSnapshot);
+      return true;
+    }
+
     try {
       const snapshot = await getAccountSnapshot(account, exchange);
       account.lastValidatedAt = nowIso();
