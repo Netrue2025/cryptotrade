@@ -52,6 +52,7 @@ function buildSignal({
   strategyType,
   entryPrice,
   stopLoss,
+  takeProfit,
   timestamp,
   confidence,
   supportLevel = null,
@@ -59,13 +60,14 @@ function buildSignal({
   meta = {},
 }) {
   const risk = buildRiskPlan(entryPrice, stopLoss);
+  const normalizedTakeProfit = Number(takeProfit || 0) > 0 ? toFixedNumber(takeProfit) : risk.takeProfit;
   return {
     id: `${pair}-${strategyType}-${timestamp}`,
     pair,
     strategyType,
     entryPrice: risk.entryPrice,
     stopLoss: risk.stopLoss,
-    takeProfit: risk.takeProfit,
+    takeProfit: normalizedTakeProfit,
     timestamp,
     status: DEFAULT_STATUS,
     side: "BUY",

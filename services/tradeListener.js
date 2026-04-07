@@ -87,6 +87,68 @@ function buildExchangeHeader(exchange, suffix = "Trade") {
   return `📊 ${getExchangeLabel(exchange)} ${suffix}`;
 }
 
+function isShortSwingTrade(trade) {
+  return String(trade?.strategyContext?.type || "").trim().toUpperCase() === "SHORT_SWING_SPOT";
+}
+
+function getStrategyReason(trade, exitOrder = null) {
+  return (
+    String(exitOrder?.reason || "").trim()
+    || String(trade?.strategyContext?.reason || "").trim()
+    || String(trade?.strategyContext?.signalReason || "").trim()
+    || "Trend Pullback Breakout"
+  );
+}
+
+function buildShortSwingSignalDetectedMessage(signal) {
+  return [
+    "SIGNAL DETECTED",
+    `Pair: ${signal.pair}`,
+    `Entry: ${formatNumber(signal.entryPrice, 6)}`,
+    `TP: ${formatNumber(signal.takeProfit, 6)}`,
+    `SL: ${formatNumber(signal.stopLoss, 6)}`,
+    `Reason: ${String(signal?.meta?.reason || "Trend Pullback Breakout")}`,
+  ].join("\n");
+}
+
+function buildShortSwingExecutedMessage(trade) {
+  const entry = getExecutionPrice(trade?.adminExecution) || toNumber(trade?.price);
+  return [
+    "BUY EXECUTED",
+    `Pair: ${trade.symbol}`,
+    `Entry: ${formatNumber(entry, 6)}`,
+    `TP: ${formatNumber(trade.takeProfitTargetPrice, 6)}`,
+    `SL: ${formatNumber(trade.stopLossTargetPrice, 6)}`,
+    `Reason: ${getStrategyReason(trade)}`,
+  ].join("\n");
+}
+
+function buildShortSwingTakeProfitMessage(trade, exitOrder) {
+  const entry = getExecutionPrice(trade?.adminExecution) || toNumber(trade?.price);
+  const exit = getExecutionPrice(exitOrder?.adminExecution) || toNumber(exitOrder?.price);
+  return [
+    "TP HIT",
+    `Pair: ${trade.symbol}`,
+    `Entry: ${formatNumber(entry, 6)}`,
+    `TP: ${formatNumber(exit || trade.takeProfitTargetPrice, 6)}`,
+    `SL: ${formatNumber(trade.stopLossTargetPrice, 6)}`,
+    `Reason: ${getStrategyReason(trade, exitOrder)}`,
+  ].join("\n");
+}
+
+function buildShortSwingStopMessage(trade, exitOrder) {
+  const entry = getExecutionPrice(trade?.adminExecution) || toNumber(trade?.price);
+  const exit = getExecutionPrice(exitOrder?.adminExecution) || toNumber(exitOrder?.price);
+  return [
+    "SL HIT",
+    `Pair: ${trade.symbol}`,
+    `Entry: ${formatNumber(entry, 6)}`,
+    `TP: ${formatNumber(trade.takeProfitTargetPrice, 6)}`,
+    `SL: ${formatNumber(exit || trade.stopLossTargetPrice, 6)}`,
+    `Reason: ${getStrategyReason(trade, exitOrder)}`,
+  ].join("\n");
+}
+
 function buildOrderPlacedMessage({ exchange, trade, exitOrder = null }) {
   const execution = exitOrder?.adminExecution || trade?.adminExecution;
   const eventLabel = exitOrder
@@ -246,12 +308,29 @@ class TradeListener {
     return result;
   }
 
+  async handleStrategySignalDetected(signal, exchange = "bybit") {
+    if (!signal?.pair) {
+      return;
+    }
+
+    await this.broadcast(buildShortSwingSignalDetectedMessage(signal), normalizeExchange(exchange), {
+      exchange: normalizeExchange(exchange),
+    });
+  }
+
   async handleTradeCreated(trade) {
     if (!trade?.symbol) {
       return;
     }
 
     const exchange = normalizeExchange(trade.exchange);
+    if (isShortSwingTrade(trade)) {
+      if (getExecutionStatus(trade.adminExecution) === "FILLED") {
+        await this.broadcast(buildShortSwingExecutedMessage(trade), exchange, { exchange });
+      }
+      return;
+    }
+
     await this.broadcast(buildOrderPlacedMessage({ exchange, trade }), exchange, { exchange });
 
     if (getExecutionStatus(trade.adminExecution) === "FILLED") {
@@ -283,7 +362,11 @@ class TradeListener {
     const previousEntryStatus = getExecutionStatus(previousTrade?.adminExecution);
     const nextEntryStatus = getExecutionStatus(nextTrade.adminExecution);
     if (previousEntryStatus !== "FILLED" && nextEntryStatus === "FILLED") {
+      if (isShortSwingTrade(nextTrade)) {
+        await this.broadcast(buildShortSwingExecutedMessage(nextTrade), exchange, { exchange });
+      } else {
       await this.broadcast(buildOrderFilledMessage({ exchange, trade: nextTrade }), exchange, { exchange });
+      }
     }
 
     const previousExitOrders = getExitOrderMap(previousTrade);
@@ -299,6 +382,18 @@ class TradeListener {
 
   async handleFilledExit(trade, exitOrder, exchange) {
     const profitPercent = calculateProfitPercent(trade, exitOrder);
+
+    if (isShortSwingTrade(trade)) {
+      if (exitOrder.kind === "TAKE_PROFIT") {
+        await this.broadcast(buildShortSwingTakeProfitMessage(trade, exitOrder), exchange, { exchange });
+      } else if (exitOrder.kind === "STOP_LOSS" || exitOrder.kind === "BREAKEVEN_STOP") {
+        await this.broadcast(buildShortSwingStopMessage(trade, exitOrder), exchange, { exchange });
+      } else {
+        await this.broadcast(buildOrderFilledMessage({ exchange, trade, exitOrder, profitPercent }), exchange, { exchange });
+      }
+      await this.updateDailyProfit(exchange, profitPercent);
+      return;
+    }
 
     if (exitOrder.kind === "TAKE_PROFIT") {
       await this.broadcast(

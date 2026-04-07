@@ -16,11 +16,11 @@ const SIGNAL_PAIRS = [
   "LTCUSDT",
 ];
 
-const SUPPORTED_SIGNAL_TIMEFRAMES = ["5m", "30m", "1h"];
+const SUPPORTED_SIGNAL_TIMEFRAMES = ["15m"];
 const SIGNAL_TIMEFRAME = SUPPORTED_SIGNAL_TIMEFRAMES.includes(String(process.env.SIGNAL_TIMEFRAME || "").trim())
   ? String(process.env.SIGNAL_TIMEFRAME || "").trim()
-  : "30m";
-const SIGNAL_HISTORY_LIMIT = 140;
+  : "15m";
+const SIGNAL_HISTORY_LIMIT = 260;
 const LEVEL_LOOKBACK = 80;
 const SIGNAL_COOLDOWN_MS = 12 * 60 * 1000;
 const SIGNAL_EXPIRY_MS = 24 * 60 * 60 * 1000;

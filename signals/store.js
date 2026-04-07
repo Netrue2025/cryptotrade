@@ -6,6 +6,10 @@ const {
 } = require("./config");
 
 function normalizeSignalRecord(signal = {}) {
+  const meta = signal.meta && typeof signal.meta === "object" && !Array.isArray(signal.meta)
+    ? JSON.parse(JSON.stringify(signal.meta))
+    : {};
+
   return {
     id: String(signal.id || "").trim(),
     pair: String(signal.pair || "").trim().toUpperCase(),
@@ -15,6 +19,9 @@ function normalizeSignalRecord(signal = {}) {
     takeProfit: Number(signal.takeProfit || 0),
     timestamp: Number(signal.timestamp || 0),
     confidence: signal.confidence ?? null,
+    supportLevel: Number(signal.supportLevel || 0) || null,
+    resistanceLevel: Number(signal.resistanceLevel || 0) || null,
+    meta,
     status: [ACTIVE_SIGNAL_STATUS, DELETED_SIGNAL_STATUS, EXPIRED_SIGNAL_STATUS].includes(
       String(signal.status || "").trim().toLowerCase()
     )

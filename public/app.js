@@ -36,6 +36,20 @@ const SPOT_MIRROR_GUIDANCE = {
   },
 };
 
+function getDefaultShortSwingSettingsDraft() {
+  return {
+    enabled: true,
+    autoTradeEnabled: false,
+    positionSizePercent: 50,
+    takeProfitPercent: 1.3,
+    stopLossPercent: 0.6,
+    breakevenTriggerPercent: 0.7,
+    maxSimultaneousTrades: 3,
+    maxTradesPerPairPerDay: 1,
+    btcDropGuardPercent: 1,
+  };
+}
+
 const state = {
   user: null,
   theme: localStorage.getItem("tradeflow-theme") || "light",
@@ -93,14 +107,25 @@ const state = {
     apiSecret: "",
     testnet: "false",
   },
+  shortSwingSettingsDraft: getDefaultShortSwingSettingsDraft(),
+  shortSwingDebug: {
+    generatedAt: "",
+    settings: getDefaultShortSwingSettingsDraft(),
+    evaluations: [],
+    logs: [],
+    trades: [],
+  },
+  loadingStrategyDebug: false,
+  loadingStrategySettings: false,
+  savingStrategySettings: false,
   socket: null,
   socketRetry: null,
   socketRefreshTimer: null,
   tradeRefreshTimer: null,
   signalFeed: {
     pairs: [],
-    timeframe: "30m",
-    supportedTimeframes: ["5m", "30m", "1h"],
+    timeframe: "15m",
+    supportedTimeframes: ["15m"],
     signals: [],
     streamConnected: false,
     statusMessage: "Connecting to the live signal engine...",
@@ -2243,6 +2268,57 @@ async function loadSavedExchangeSettings(exchange) {
   }
 }
 
+async function loadShortSwingSettings() {
+  if (!state.user || state.user.role !== "admin") {
+    state.shortSwingSettingsDraft = getDefaultShortSwingSettingsDraft();
+    return;
+  }
+
+  state.loadingStrategySettings = true;
+  render();
+  try {
+    const payload = await api("/api/strategy/short-swing/settings");
+    state.shortSwingSettingsDraft = {
+      ...getDefaultShortSwingSettingsDraft(),
+      ...(payload.settings || {}),
+    };
+  } finally {
+    state.loadingStrategySettings = false;
+  }
+}
+
+async function loadShortSwingDebug() {
+  if (!state.user || state.user.role !== "admin") {
+    state.shortSwingDebug = {
+      generatedAt: "",
+      settings: getDefaultShortSwingSettingsDraft(),
+      evaluations: [],
+      logs: [],
+      trades: [],
+    };
+    return;
+  }
+
+  state.loadingStrategyDebug = true;
+  refreshSignalPaneDom();
+  try {
+    const payload = await api("/api/strategy/short-swing/debug");
+    state.shortSwingDebug = {
+      generatedAt: payload.generatedAt || "",
+      settings: {
+        ...getDefaultShortSwingSettingsDraft(),
+        ...(payload.settings || {}),
+      },
+      evaluations: Array.isArray(payload.evaluations) ? payload.evaluations : [],
+      logs: Array.isArray(payload.logs) ? payload.logs : [],
+      trades: Array.isArray(payload.trades) ? payload.trades : [],
+    };
+  } finally {
+    state.loadingStrategyDebug = false;
+    refreshSignalPaneDom();
+  }
+}
+
 async function loadDashboardData() {
   if (!state.user) {
     disconnectWatchSocket();
@@ -2270,6 +2346,13 @@ async function loadDashboardData() {
 
   const settingsPromise = loadSavedExchangeSettings(getActiveExchange()).then(() => {
     render();
+  });
+  const shortSwingSettingsPromise = loadShortSwingSettings().then(() => {
+    render();
+  });
+  const shortSwingDebugPromise = loadShortSwingDebug().catch(() => {
+    state.loadingStrategyDebug = false;
+    refreshSignalPaneDom();
   });
 
   const watchlistPromise = refreshWatchlistFeed()
@@ -2334,6 +2417,8 @@ async function loadDashboardData() {
   startTradeRefreshTimer();
   void accountPromise;
   void settingsPromise;
+  void shortSwingSettingsPromise;
+  void shortSwingDebugPromise;
   void watchlistPromise;
 }
 
@@ -3234,6 +3319,145 @@ function renderCurrentUserWalletSummary() {
   `;
 }
 
+function renderShortSwingSettingsSection() {
+  if (state.user?.role !== "admin") {
+    return "";
+  }
+
+  const draft = state.shortSwingSettingsDraft || getDefaultShortSwingSettingsDraft();
+  return `
+    <section class="mobile-card${loadingClass(state.loadingStrategySettings)}">
+      ${state.loadingStrategySettings ? renderSectionLoadingOverlay("Loading strategy", "Fetching short swing controls") : ""}
+      <div class="section-head">
+        <div>
+          <h3>Short Swing Strategy</h3>
+          <p class="muted-copy">Control the live signal and auto-trade engine here instead of editing environment variables.</p>
+        </div>
+      </div>
+      <form id="short-swing-settings-form" class="stack-form subtle-form">
+        <label>
+          Strategy enabled
+          <select name="enabled">
+            <option value="true" ${draft.enabled ? "selected" : ""}>Enabled</option>
+            <option value="false" ${!draft.enabled ? "selected" : ""}>Disabled</option>
+          </select>
+        </label>
+        <label>
+          Auto trade
+          <select name="autoTradeEnabled">
+            <option value="false" ${!draft.autoTradeEnabled ? "selected" : ""}>Disabled</option>
+            <option value="true" ${draft.autoTradeEnabled ? "selected" : ""}>Enabled</option>
+          </select>
+        </label>
+        <label>Position size % <input name="positionSizePercent" type="number" min="0.1" max="100" step="0.1" value="${escapeHtml(draft.positionSizePercent)}" /></label>
+        <label>Take profit % <input name="takeProfitPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.takeProfitPercent)}" /></label>
+        <label>Stop loss % <input name="stopLossPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.stopLossPercent)}" /></label>
+        <label>Breakeven trigger % <input name="breakevenTriggerPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.breakevenTriggerPercent)}" /></label>
+        <label>Max simultaneous trades <input name="maxSimultaneousTrades" type="number" min="1" step="1" value="${escapeHtml(draft.maxSimultaneousTrades)}" /></label>
+        <label>Max trades per pair per day <input name="maxTradesPerPairPerDay" type="number" min="1" step="1" value="${escapeHtml(draft.maxTradesPerPairPerDay)}" /></label>
+        <label>BTC 15m drop guard % <input name="btcDropGuardPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.btcDropGuardPercent)}" /></label>
+        <button class="button-primary shimmer-button" type="submit" ${state.savingStrategySettings ? "disabled" : ""}>
+          ${state.savingStrategySettings ? "Saving..." : "Save strategy settings"}
+        </button>
+      </form>
+    </section>
+  `;
+}
+
+function renderShortSwingDebugPane() {
+  if (state.user?.role !== "admin") {
+    return "";
+  }
+
+  const debug = state.shortSwingDebug || {};
+  const evaluations = Array.isArray(debug.evaluations) ? debug.evaluations : [];
+  const logs = Array.isArray(debug.logs) ? debug.logs : [];
+  const trades = Array.isArray(debug.trades) ? debug.trades : [];
+
+  return `
+    <section class="mobile-card${loadingClass(state.loadingStrategyDebug)}">
+      ${state.loadingStrategyDebug ? renderSectionLoadingOverlay("Loading debug", "Evaluating all tracked pairs") : ""}
+      <div class="section-head">
+        <div>
+          <h3>Short Swing Debug</h3>
+          <p class="muted-copy">See exactly why each tracked pair passed or failed the live strategy filter.</p>
+        </div>
+        <div class="history-toolbar-actions">
+          <button id="strategy-debug-refresh-btn" class="text-link" type="button">Refresh debug</button>
+        </div>
+      </div>
+      <div class="signal-page-toolbar">
+        <div class="signal-toolbar-pill">
+          <span>Generated</span>
+          <strong>${debug.generatedAt ? new Date(debug.generatedAt).toLocaleTimeString() : "--"}</strong>
+        </div>
+        <div class="signal-toolbar-pill">
+          <span>Passing pairs</span>
+          <strong>${evaluations.filter((item) => item.eligible).length}</strong>
+        </div>
+        <div class="signal-toolbar-pill">
+          <span>Active trades</span>
+          <strong>${trades.length}</strong>
+        </div>
+      </div>
+      <div class="compact-list">
+        ${
+          evaluations.length
+            ? evaluations.map((item) => `
+              <div class="asset-card">
+                <div class="asset-row">
+                  <div>
+                    <strong>${item.pair}</strong>
+                    <p class="muted-copy">${item.eligible ? "Eligible now" : (item.failureReasons || []).slice(0, 2).join(" ") || "Waiting for setup."}</p>
+                  </div>
+                  <div class="asset-values">
+                    <strong class="${item.eligible ? "positive" : "negative"}">${item.eligible ? "PASS" : "FAIL"}</strong>
+                    <p class="muted-copy">${Math.round(Number(item.confidence || 0))}%</p>
+                  </div>
+                </div>
+                <div class="trade-detail-grid">
+                  <div class="trade-detail-pill"><span>Entry</span><strong>${item.metrics?.entryPrice ? formatNumber(item.metrics.entryPrice, 6) : "--"}</strong></div>
+                  <div class="trade-detail-pill"><span>RS 4H</span><strong>${item.metrics?.relativeStrength4h ?? "--"}</strong></div>
+                  <div class="trade-detail-pill"><span>BTC 15m</span><strong>${item.metrics?.btcDrop15m ?? "--"}%</strong></div>
+                </div>
+                <p class="muted-copy">Trend ${item.checks?.trendPriceAbove200 ? "ok" : "x"} | EMA ${item.checks?.trendEmaAligned ? "ok" : "x"} | Structure ${item.checks?.higherHighsHigherLows ? "ok" : "x"} | Pullback ${item.checks?.pullbackDetected ? "ok" : "x"} | Breakout ${item.checks?.breakoutClose && item.checks?.breakoutPreviousReset ? "ok" : "x"} | Volume ${item.checks?.breakoutVolume ? "ok" : "x"} | RS ${item.checks?.relativeStrength ? "ok" : "x"} | BTC guard ${item.checks?.btcGuardPassed ? "ok" : "x"}</p>
+              </div>
+            `).join("")
+            : `<p class="muted-copy">No strategy debug data yet.</p>`
+        }
+      </div>
+      <section class="mobile-card">
+        <div class="section-head">
+          <div>
+            <h3>Recent Strategy Logs</h3>
+            <p class="muted-copy">Latest signal, skip, trade, and stop-management events.</p>
+          </div>
+        </div>
+        <div class="compact-list">
+          ${
+            logs.length
+              ? logs.map((log) => `
+                <div class="asset-card">
+                  <div class="asset-row">
+                    <div>
+                      <strong>${String(log.eventType || "").replace(/_/g, " ")}</strong>
+                      <p class="muted-copy">${log.pair || "--"} ${log.reason || log.error || ""}</p>
+                    </div>
+                    <div class="asset-values">
+                      <strong>${log.tradeId ? String(log.tradeId).slice(-6) : "--"}</strong>
+                      <p class="muted-copy">${log.createdAt ? new Date(log.createdAt).toLocaleString() : "--"}</p>
+                    </div>
+                  </div>
+                </div>
+              `).join("")
+              : `<p class="muted-copy">No strategy logs yet.</p>`
+          }
+        </div>
+      </section>
+    </section>
+  `;
+}
+
 function renderSettingsPane() {
   const settingsDraft = state.settingsDraft || { apiKey: "", apiSecret: "", testnet: "false" };
   const activeExchange = getActiveExchange();
@@ -3303,6 +3527,7 @@ function renderSettingsPane() {
             : ""
         }
       </section>
+      ${renderShortSwingSettingsSection()}
       <section class="mobile-card">
         <div class="section-head">
           <div>
@@ -3345,6 +3570,7 @@ function renderSignalsPane() {
           formatUsdtUnit,
         })}
       </div>
+      ${renderShortSwingDebugPane()}
     `
     : `<section class="mobile-card"><p class="muted-copy">Signal dashboard is loading...</p></section>`;
 }
@@ -3503,6 +3729,12 @@ function renderDashboardShell() {
       }
       state.activeTab = nextTab;
       render();
+      if (nextTab === "signals" && state.user?.role === "admin") {
+        void loadShortSwingDebug().catch(() => {});
+      }
+      if (nextTab === "settings" && state.user?.role === "admin") {
+        void loadShortSwingSettings().then(() => render()).catch(() => {});
+      }
     });
   });
 }
@@ -3511,6 +3743,7 @@ function bindDashboardActions() {
   bindHistoryActions();
   bindAdminUserDisclosureToggles();
   bindSignalFeedActions();
+  bindShortSwingSettingsActions();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -3692,10 +3925,26 @@ function bindDashboardActions() {
         loading: false,
       };
       state.tradeMarketMap = {};
+      state.settingsDraft = {
+        apiKey: "",
+        apiSecret: "",
+        testnet: "false",
+      };
+      state.shortSwingSettingsDraft = getDefaultShortSwingSettingsDraft();
+      state.shortSwingDebug = {
+        generatedAt: "",
+        settings: getDefaultShortSwingSettingsDraft(),
+        evaluations: [],
+        logs: [],
+        trades: [],
+      };
+      state.loadingStrategyDebug = false;
+      state.loadingStrategySettings = false;
+      state.savingStrategySettings = false;
       state.signalFeed = {
         pairs: [],
-        timeframe: "30m",
-        supportedTimeframes: ["5m", "30m", "1h"],
+        timeframe: "15m",
+        supportedTimeframes: ["15m"],
         signals: [],
         streamConnected: false,
         statusMessage: "Connecting to the live signal engine...",
@@ -3791,6 +4040,70 @@ function bindSignalFeedActions() {
     button.addEventListener("click", () => {
       openSignalModal(button.dataset.openSignal);
     });
+  });
+
+  const strategyDebugRefreshButton = document.getElementById("strategy-debug-refresh-btn");
+  if (strategyDebugRefreshButton) {
+    strategyDebugRefreshButton.addEventListener("click", () => {
+      void loadShortSwingDebug().catch((error) => showError(error.message));
+    });
+  }
+}
+
+function bindShortSwingSettingsActions() {
+  const form = document.getElementById("short-swing-settings-form");
+  if (!form) {
+    return;
+  }
+
+  form.querySelectorAll("input, select").forEach((field) => {
+    field.addEventListener("input", () => {
+      state.shortSwingSettingsDraft = {
+        ...state.shortSwingSettingsDraft,
+        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
+      };
+    });
+    field.addEventListener("change", () => {
+      state.shortSwingSettingsDraft = {
+        ...state.shortSwingSettingsDraft,
+        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
+      };
+    });
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    state.savingStrategySettings = true;
+    render();
+    try {
+      const data = Object.fromEntries(new FormData(form).entries());
+      const payload = {
+        enabled: data.enabled === "true",
+        autoTradeEnabled: data.autoTradeEnabled === "true",
+        positionSizePercent: Number(data.positionSizePercent || 0),
+        takeProfitPercent: Number(data.takeProfitPercent || 0),
+        stopLossPercent: Number(data.stopLossPercent || 0),
+        breakevenTriggerPercent: Number(data.breakevenTriggerPercent || 0),
+        maxSimultaneousTrades: Number(data.maxSimultaneousTrades || 0),
+        maxTradesPerPairPerDay: Number(data.maxTradesPerPairPerDay || 0),
+        btcDropGuardPercent: Number(data.btcDropGuardPercent || 0),
+      };
+      const result = await api("/api/strategy/short-swing/settings", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      state.shortSwingSettingsDraft = {
+        ...getDefaultShortSwingSettingsDraft(),
+        ...(result.settings || {}),
+      };
+      await loadShortSwingDebug();
+      showNotice("Short swing strategy settings saved");
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      state.savingStrategySettings = false;
+      render();
+    }
   });
 }
 

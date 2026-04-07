@@ -10,6 +10,7 @@ function getStrategyEmoji(type) {
     RESISTANCE: "🟧",
     EMA_RSI: "🟪",
     BREAKOUT: "🟩",
+    SWING_SPOT: "🟨",
   };
   return map[value] || "🟦";
 }
@@ -21,6 +22,7 @@ function getStrategyLabel(type) {
     RESISTANCE: "RESISTANCE",
     EMA_RSI: "EMA-RSI",
     BREAKOUT: "BREAKOUT",
+    SWING_SPOT: "SWING-SPOT",
   };
   return map[value] || value || "SUPPORT";
 }
@@ -117,12 +119,13 @@ function buildTelegramMessage(signal) {
     `Entry: ${signal.entryPrice}`,
     `SL: ${signal.stopLoss}`,
     `TP: ${signal.takeProfit}`,
+    signal?.meta?.reason ? `Reason: ${signal.meta.reason}` : null,
     "",
     `Confidence: ${confidence}`,
     `Time: ${formatTelegramTime(signal.timestamp)}`,
     "",
     `[View Chart](${chartUrl})`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 async function sendTelegramAlert(signal) {

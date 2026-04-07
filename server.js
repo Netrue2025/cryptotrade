@@ -31,6 +31,7 @@ const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } =
 const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
 const { SubscriberModel } = require("./models/subscriberModel");
 const { SignalEngine } = require("./signals/engine");
+const { DEFAULT_SHORT_SWING_SETTINGS, normalizeShortSwingSettings } = require("./strategies/short-swing-config");
 const { sendTelegramAlert } = require("./services/telegram");
 const { TelegramService } = require("./services/telegramService");
 const { TradeListener } = require("./services/tradeListener");
@@ -63,6 +64,7 @@ const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
 const ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 1000 * 60;
 const TRADE_RECONCILE_BACKGROUND_INTERVAL_MS = 15_000;
 const SERVICE_RETRY_INTERVAL_MS = 60_000;
+const MAX_STRATEGY_LOG_HISTORY = 1000;
 
 let db = null;
 const signalEngine = new SignalEngine();
@@ -76,6 +78,7 @@ const tradeListener = new TradeListener({
 });
 signalEngine.on("signal", (signal) => {
   void sendTelegramAlert(signal);
+  void queueShortSwingSignal(signal);
 });
 signalEngine.on("snapshot", () => {
   persistSignalState();
@@ -89,6 +92,22 @@ const fiatRateCache = {
 const watchlistCache = new Map();
 let signalEngineStartPromise = null;
 let tradeListenerStartPromise = null;
+let shortSwingSignalQueue = Promise.resolve();
+
+function getShortSwingSettings() {
+  return normalizeShortSwingSettings(db?.meta?.shortSwingSettings, DEFAULT_SHORT_SWING_SETTINGS);
+}
+
+function setShortSwingSettings(settings = {}) {
+  const normalized = normalizeShortSwingSettings(settings, DEFAULT_SHORT_SWING_SETTINGS);
+  db.meta = {
+    ...(db.meta || {}),
+    shortSwingSettings: normalized,
+  };
+  signalEngine.setStrategySettings(normalized);
+  persist();
+  return normalized;
+}
 
 function persist() {
   if (!db) {
@@ -1094,6 +1113,21 @@ function getExecutionFilledQty(execution) {
   return Number(execution?.executedQty || 0);
 }
 
+function getExecutionAveragePrice(execution) {
+  const directPrice = Number(execution?.price || execution?.rawPrice || 0);
+  if (directPrice > 0) {
+    return directPrice;
+  }
+
+  const qty = getExecutionFilledQty(execution);
+  const notional = Number(execution?.cummulativeQuoteQty || 0);
+  if (qty > 0 && notional > 0) {
+    return notional / qty;
+  }
+
+  return 0;
+}
+
 function getMirroredExecutionForTrade(trade, userId) {
   return (trade.mirroredExecutions || []).find((item) => item.userId === userId)?.order || null;
 }
@@ -1130,7 +1164,11 @@ function getActiveTakeProfitOrders(trade) {
 }
 
 function hasAnyTakeProfitHistory(trade) {
-  return (trade.exitOrders || []).some((exitOrder) => exitOrder.kind === "TAKE_PROFIT");
+  return (trade.exitOrders || []).some(
+    (exitOrder) =>
+      exitOrder.kind === "TAKE_PROFIT"
+      && !["ERROR", "CANCELED"].includes(String(exitOrder.adminExecution?.status || "").toUpperCase())
+  );
 }
 
 function getActiveOpenOrdersForSymbol(openOrders, symbol) {
@@ -1570,6 +1608,14 @@ async function reconcileTradeStatuses() {
     }
   }
 
+  try {
+    if (await monitorShortSwingTrades()) {
+      changed = true;
+    }
+  } catch (error) {
+    console.error("Short swing trade monitor failed:", error.message);
+  }
+
   if (changed) {
     persist();
   }
@@ -1635,6 +1681,310 @@ function deriveTradeLifecycle(trade) {
   return "OPEN";
 }
 
+function isShortSwingTrade(trade) {
+  return String(trade?.strategyContext?.type || "").trim().toUpperCase() === "SHORT_SWING_SPOT";
+}
+
+function hasActiveNonTakeProfitExitExecution(trade) {
+  return (trade?.exitOrders || []).some(
+    (exitOrder) => exitOrder.kind !== "TAKE_PROFIT" && isExecutionActive(exitOrder?.adminExecution)
+  );
+}
+
+function getStrategyReason(trade) {
+  return String(trade?.strategyContext?.reason || "").trim() || "Trend Pullback Breakout";
+}
+
+function getTradeDayKey(value) {
+  const date = new Date(value || Date.now());
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getAdminUser() {
+  return db?.users?.find((user) => user.role === "admin") || null;
+}
+
+function recordStrategyLog(eventType, payload = {}, persistImmediately = true) {
+  if (!db) {
+    return;
+  }
+
+  db.strategyLogs = [
+    {
+      id: randomId(12),
+      eventType,
+      createdAt: nowIso(),
+      ...payload,
+    },
+    ...(db.strategyLogs || []),
+  ].slice(0, MAX_STRATEGY_LOG_HISTORY);
+
+  if (persistImmediately) {
+    persist();
+  }
+}
+
+function countOpenAdminBuyTrades(adminId, exchange) {
+  return db.tradeIntents.filter((trade) => {
+    if (trade.createdByUserId !== adminId || getTradeExchange(trade) !== exchange || trade.side !== "BUY") {
+      return false;
+    }
+    const lifecycle = deriveTradeLifecycle(trade);
+    return lifecycle === "OPEN" || lifecycle === "PENDING";
+  }).length;
+}
+
+function hasShortSwingTradeForPairToday(adminId, exchange, symbol) {
+  const settings = getShortSwingSettings();
+  const todayKey = getTradeDayKey(Date.now());
+  const tradeCount = db.tradeIntents.filter(
+    (trade) =>
+      isShortSwingTrade(trade) &&
+      trade.createdByUserId === adminId &&
+      getTradeExchange(trade) === exchange &&
+      trade.symbol === symbol &&
+      getTradeDayKey(trade.createdAt) === todayKey
+  ).length;
+  return tradeCount >= settings.maxTradesPerPairPerDay;
+}
+
+async function buildShortSwingOrderInput(admin, exchange, signal) {
+  const settings = getShortSwingSettings();
+  const adminAccount = getExchangeAccount(admin, exchange);
+  if (!adminAccount) {
+    throw new Error(`Connect the admin ${getExchangeLabel(exchange)} account first.`);
+  }
+
+  const exchangeInfo = await getExchangeInfo(signal.pair, adminAccount.testnet, exchange);
+  const { details } = getSymbolFilters(exchangeInfo, signal.pair);
+  const quoteAsset = details.quoteAsset || "USDT";
+  const accountInfo = await getAccountInfo({ ...adminAccount, exchange }, exchange);
+  const quoteBalance = Number((accountInfo.balances || []).find((item) => item.asset === quoteAsset)?.free || 0);
+  const spendAmount = quoteBalance * (settings.positionSizePercent / 100);
+
+  if (!quoteBalance || spendAmount <= 0) {
+    throw new Error(`No free ${quoteAsset} balance is available for short swing auto-trading.`);
+  }
+
+  return {
+    symbol: signal.pair,
+    side: "BUY",
+    type: "MARKET",
+    quoteOrderQty: String(Math.min(spendAmount, quoteBalance)),
+  };
+}
+
+function queueShortSwingSignal(signal) {
+  shortSwingSignalQueue = shortSwingSignalQueue
+    .then(async () => {
+      const settings = getShortSwingSettings();
+      if (!settings.enabled || String(signal?.strategyType || "").trim().toUpperCase() !== "SWING_SPOT") {
+        return;
+      }
+
+      const admin = getAdminUser();
+      if (!admin) {
+        return;
+      }
+
+      const exchange = getPreferredExchange(admin);
+      await tradeListener.handleStrategySignalDetected(signal, exchange).catch((error) => {
+        console.error(`Short swing signal broadcast failed for ${signal.pair}:`, error.message);
+      });
+      recordStrategyLog("signal_detected", {
+        pair: signal.pair,
+        signalId: signal.id,
+        exchange,
+        entryPrice: signal.entryPrice,
+        takeProfit: signal.takeProfit,
+        stopLoss: signal.stopLoss,
+      });
+
+      if (!settings.autoTradeEnabled) {
+        recordStrategyLog("signal_skipped", {
+          pair: signal.pair,
+          signalId: signal.id,
+          exchange,
+          reason: "Auto-trade feature flag is disabled.",
+        });
+        return;
+      }
+
+      const adminAccount = getExchangeAccount(admin, exchange);
+      if (!adminAccount?.permissions?.canTrade) {
+        recordStrategyLog("signal_skipped", {
+          pair: signal.pair,
+          signalId: signal.id,
+          exchange,
+          reason: `Admin ${getExchangeLabel(exchange)} account is not trade-enabled.`,
+        });
+        return;
+      }
+
+      if ((db.tradeIntents || []).some((trade) => trade?.strategyContext?.signalId === signal.id)) {
+        return;
+      }
+
+      if (countOpenAdminBuyTrades(admin.id, exchange) >= settings.maxSimultaneousTrades) {
+        recordStrategyLog("signal_skipped", {
+          pair: signal.pair,
+          signalId: signal.id,
+          exchange,
+          reason: `Max ${settings.maxSimultaneousTrades} simultaneous trades already active.`,
+        });
+        return;
+      }
+
+      if (hasShortSwingTradeForPairToday(admin.id, exchange, signal.pair)) {
+        recordStrategyLog("signal_skipped", {
+          pair: signal.pair,
+          signalId: signal.id,
+          exchange,
+          reason: `Max ${settings.maxTradesPerPairPerDay} trade per pair per day already used.`,
+        });
+        return;
+      }
+
+      try {
+        const orderInput = await buildShortSwingOrderInput(admin, exchange, signal);
+        const strategyContext = {
+          type: "SHORT_SWING_SPOT",
+          signalId: signal.id,
+          signalTimestamp: signal.timestamp,
+          reason: String(signal?.meta?.reason || "Trend Pullback Breakout"),
+          signalReason: String(signal?.meta?.reason || "Trend Pullback Breakout"),
+          breakevenTriggerPrice: String(
+            Number(signal?.meta?.breakevenTriggerPrice || 0)
+            || Number(signal.entryPrice || 0) * (1 + settings.breakevenTriggerPercent / 100)
+          ),
+          activeStopLossPrice: String(signal.stopLoss),
+          breakevenMoved: false,
+        };
+        const { trade } = await createTradeIntent(admin, exchange, orderInput, {
+          takeProfitTargetPrice: String(signal.takeProfit),
+          stopLossTargetPrice: String(signal.stopLoss),
+          strategyContext,
+          throwOnTpFailure: false,
+        });
+        recordStrategyLog("trade_executed", {
+          pair: trade.symbol,
+          tradeId: trade.id,
+          exchange,
+          signalId: signal.id,
+          entryPrice: getExecutionAveragePrice(trade.adminExecution) || Number(signal.entryPrice || 0),
+          takeProfit: trade.takeProfitTargetPrice,
+          stopLoss: trade.stopLossTargetPrice,
+        });
+      } catch (error) {
+        recordStrategyLog("signal_error", {
+          pair: signal.pair,
+          signalId: signal.id,
+          exchange,
+          error: error.message,
+        });
+        console.error(`Short swing auto-trade failed for ${signal.pair}:`, error.message);
+      }
+    })
+    .catch((error) => {
+      console.error("Short swing signal queue failed:", error.message);
+    });
+
+  return shortSwingSignalQueue;
+}
+
+async function monitorShortSwingTrades() {
+  const settings = getShortSwingSettings();
+  let changed = false;
+  const priceCache = new Map();
+
+  for (const trade of db.tradeIntents) {
+    if (!isShortSwingTrade(trade)) {
+      continue;
+    }
+    if (trade.side !== "BUY" || trade.adminExecution?.status !== "FILLED") {
+      continue;
+    }
+    if (deriveTradeLifecycle(trade) !== "OPEN" || getRemainingTradeQuantity(trade) <= 0 || hasActiveNonTakeProfitExitExecution(trade)) {
+      continue;
+    }
+
+    const admin = db.users.find((user) => user.id === trade.createdByUserId);
+    const exchange = getTradeExchange(trade);
+    const adminAccount = getExchangeAccount(admin, exchange);
+    if (!admin || !adminAccount) {
+      continue;
+    }
+
+    const priceCacheKey = `${exchange}:${trade.symbol}:${adminAccount.testnet ? "testnet" : "mainnet"}`;
+    if (!priceCache.has(priceCacheKey)) {
+      const ticker = await getTickerPrice(trade.symbol, adminAccount.testnet, exchange).catch(() => null);
+      priceCache.set(priceCacheKey, Number(ticker?.price || 0));
+    }
+
+    const currentPrice = Number(priceCache.get(priceCacheKey) || 0);
+    if (!currentPrice) {
+      continue;
+    }
+
+    const entryPrice = getExecutionAveragePrice(trade.adminExecution) || Number(trade.price || 0);
+    const breakevenTriggerPrice = Number(
+      trade?.strategyContext?.breakevenTriggerPrice || entryPrice * (1 + settings.breakevenTriggerPercent / 100)
+    );
+    const activeStopLossPrice = Number(trade?.strategyContext?.activeStopLossPrice || trade.stopLossTargetPrice || 0);
+
+    if (!trade.strategyContext) {
+      trade.strategyContext = {
+        type: "SHORT_SWING_SPOT",
+        reason: "Trend Pullback Breakout",
+        signalReason: "Trend Pullback Breakout",
+        breakevenTriggerPrice: String(breakevenTriggerPrice),
+        activeStopLossPrice: String(activeStopLossPrice),
+        breakevenMoved: false,
+      };
+      changed = true;
+    }
+
+    if (!trade.strategyContext.breakevenMoved && breakevenTriggerPrice > 0 && currentPrice >= breakevenTriggerPrice) {
+      trade.strategyContext.breakevenMoved = true;
+      trade.strategyContext.activeStopLossPrice = String(entryPrice);
+      changed = true;
+      recordStrategyLog("breakeven_armed", {
+        pair: trade.symbol,
+        tradeId: trade.id,
+        exchange,
+        entryPrice,
+        triggerPrice: breakevenTriggerPrice,
+      }, false);
+    }
+
+    const nextStopLossPrice = Number(trade.strategyContext.activeStopLossPrice || activeStopLossPrice || 0);
+    if (nextStopLossPrice > 0 && currentPrice <= nextStopLossPrice) {
+      const stopKind = trade.strategyContext.breakevenMoved ? "BREAKEVEN_STOP" : "STOP_LOSS";
+      await executeTradeExit(trade, admin, {
+        kind: stopKind,
+        type: "MARKET",
+        reason: getStrategyReason(trade),
+        triggerPrice: nextStopLossPrice,
+        cancelTakeProfits: true,
+      });
+      recordStrategyLog("stop_exit_triggered", {
+        pair: trade.symbol,
+        tradeId: trade.id,
+        exchange,
+        exitKind: stopKind,
+        triggerPrice: nextStopLossPrice,
+        currentPrice,
+      }, false);
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
 function serializeTradeForAdmin(trade) {
   return {
     ...trade,
@@ -1660,6 +2010,8 @@ function serializeTradeForUser(trade, userId) {
     price: trade.price,
     exchange: getTradeExchange(trade),
     takeProfitTargetPrice: trade.takeProfitTargetPrice,
+    stopLossTargetPrice: trade.stopLossTargetPrice || null,
+    strategyContext: trade.strategyContext || null,
     lifecycleStatus: deriveTradeLifecycle(trade),
     adminExecution: trade.adminExecution,
     mirroredExecution: mirror || null,
@@ -2099,6 +2451,208 @@ function getMirroringUsers(exchange) {
   );
 }
 
+async function createTradeIntent(admin, exchange, orderInput, options = {}) {
+  const exchangeLabel = getExchangeLabel(exchange);
+  const adminAccount = getExchangeAccount(admin, exchange);
+  if (!adminAccount) {
+    throw new Error(`Connect the admin ${exchangeLabel} account first.`);
+  }
+
+  const exchangeInfo = await getExchangeInfo(orderInput.symbol, adminAccount.testnet, exchange);
+  const normalizedOrderInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, orderInput, exchangeInfo);
+  await validateNotionalRule({ ...adminAccount, exchange }, normalizedOrderInput, exchangeInfo);
+  const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedOrderInput, exchange);
+  const trade = {
+    id: randomId(12),
+    createdAt: nowIso(),
+    createdByUserId: admin.id,
+    createdByName: admin.name,
+    exchange,
+    symbol: normalizedOrderInput.symbol,
+    side: normalizedOrderInput.side,
+    type: normalizedOrderInput.type,
+    quantity: normalizedOrderInput.quantity || null,
+    quoteOrderQty: normalizedOrderInput.quoteOrderQty || null,
+    price: normalizedOrderInput.price || null,
+    timeInForce: normalizedOrderInput.timeInForce || null,
+    takeProfitTargetPrice: options.takeProfitTargetPrice || normalizedOrderInput.takeProfitPrice || null,
+    stopLossTargetPrice: options.stopLossTargetPrice || null,
+    adminExecution: sanitizeExecution(adminOrder),
+    mirroredExecutions: [],
+    exitOrders: [],
+    strategyContext: options.strategyContext || null,
+  };
+
+  for (const follower of getMirroringUsers(exchange)) {
+    const mirroredOrderInput = await buildMirroredEntryOrderForUser(follower, normalizedOrderInput, exchange)
+      .catch((error) => ({
+        __mirrorError: error.message,
+      }));
+    const child = mirroredOrderInput?.__mirrorError
+      ? {
+          userId: follower.id,
+          userName: follower.name,
+          exchange,
+          purpose: "ENTRY",
+          status: "SKIPPED",
+          error: mirroredOrderInput.__mirrorError,
+          order: null,
+        }
+      : await executeOrderForUser(follower, mirroredOrderInput, "ENTRY", exchange);
+    trade.mirroredExecutions.push(child);
+  }
+
+  db.tradeIntents.unshift(trade);
+  persist();
+  await tradeListener.handleTradeCreated(trade).catch((error) => {
+    console.error(`Trade listener create event failed for trade ${trade.id}:`, error.message);
+  });
+
+  let tpOrder = null;
+  if (trade.takeProfitTargetPrice && trade.side === "BUY") {
+    tpOrder = await autoPlaceTakeProfit(trade, { force: true });
+    if (tpOrder?.adminExecution?.status === "ERROR" && options.throwOnTpFailure !== false) {
+      throw new Error(tpOrder.adminExecution.error || `Unable to place the take-profit order on ${exchangeLabel}.`);
+    }
+    if (tpOrder) {
+      await tradeListener.handleExitOrderCreated(trade, tpOrder).catch((error) => {
+        console.error(`Trade listener take-profit placement failed for trade ${trade.id}:`, error.message);
+      });
+    }
+  }
+
+  return {
+    trade,
+    tpOrder,
+    normalizedOrderInput,
+  };
+}
+
+async function executeTradeExit(trade, admin, options = {}) {
+  const exchange = getTradeExchange(trade);
+  const adminAccount = getExchangeAccount(admin, exchange);
+  if (!adminAccount) {
+    throw new Error(`Connect the admin ${getExchangeLabel(exchange)} account first.`);
+  }
+
+  const type = String(options.type || "MARKET").trim().toUpperCase();
+  const price = options.price ? String(options.price).trim() : undefined;
+  const kind = String(options.kind || "MANUAL_SELL").trim().toUpperCase();
+  if (type === "LIMIT" && !price) {
+    throw new Error("Limit sell requires a price.");
+  }
+
+  const exchangeInfo = await getExchangeInfo(trade.symbol, adminAccount.testnet, exchange);
+  if (options.cancelTakeProfits !== false) {
+    await cancelActiveTakeProfitOrders(trade);
+  }
+
+  const quantity =
+    type === "MARKET"
+      ? await getMaxSellQuantityForAccount({ ...adminAccount, exchange }, trade.symbol, exchangeInfo, type, options.quantity)
+      : String(options.quantity || getRemainingTradeQuantity(trade) || "").trim() || undefined;
+
+  if (!quantity) {
+    throw new Error("No remaining quantity is available to close this trade.");
+  }
+
+  const exitOrder = {
+    id: randomId(10),
+    kind,
+    createdAt: nowIso(),
+    side: "SELL",
+    type,
+    price: price || null,
+    quantity,
+    exchange,
+    reason: options.reason || null,
+    triggerPrice: options.triggerPrice ? String(options.triggerPrice) : null,
+    adminExecution: null,
+    mirroredExecutions: [],
+  };
+
+  const exitInput = {
+    symbol: trade.symbol,
+    side: "SELL",
+    type,
+    quantity,
+    price,
+    timeInForce: type === "LIMIT" ? "GTC" : undefined,
+  };
+  const normalizedExitInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, exitInput, exchangeInfo);
+  exitOrder.quantity = normalizedExitInput.quantity || exitOrder.quantity;
+  await validateNotionalRule({ ...adminAccount, exchange }, normalizedExitInput, exchangeInfo);
+  const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedExitInput, exchange);
+  exitOrder.adminExecution = sanitizeExecution(adminOrder);
+
+  for (const child of trade.mirroredExecutions || []) {
+    const user = db.users.find((item) => item.id === child.userId);
+    const childExchange = normalizeExchange(child.exchange, exchange);
+    const childAccount = getExchangeAccount(user, childExchange);
+    let childQty = "";
+
+    if (childAccount && type === "MARKET") {
+      try {
+        childQty = await getMaxSellQuantityForAccount(
+          { ...childAccount, exchange: childExchange },
+          trade.symbol,
+          null,
+          type,
+          options.quantity ? getRemainingTradeQuantity(trade, child.userId) : null
+        );
+      } catch (error) {
+        exitOrder.mirroredExecutions.push({
+          userId: child.userId,
+          userName: child.userName,
+          exchange: childExchange,
+          purpose: kind,
+          status: "SKIPPED",
+          error: error.message,
+          order: null,
+        });
+        continue;
+      }
+    } else {
+      childQty = String(options.quantity || getRemainingTradeQuantity(trade, child.userId) || "").trim();
+    }
+
+    if (!user || !childQty) {
+      exitOrder.mirroredExecutions.push({
+        userId: child.userId,
+        userName: child.userName,
+        exchange: childExchange,
+        purpose: kind,
+        status: "SKIPPED",
+        error: "No filled quantity available for mirrored sell.",
+        order: null,
+      });
+      continue;
+    }
+
+    const childExecution = await executeOrderForUser(
+      user,
+      {
+        symbol: trade.symbol,
+        side: "SELL",
+        type,
+        quantity: childQty,
+        price,
+        timeInForce: type === "LIMIT" ? "GTC" : undefined,
+      },
+      kind,
+      childExchange
+    );
+    exitOrder.mirroredExecutions.push(childExecution);
+  }
+
+  trade.exitOrders.push(exitOrder);
+  persist();
+  await tradeListener.handleExitOrderCreated(trade, exitOrder).catch((error) => {
+    console.error(`Trade listener exit event failed for trade ${trade.id}:`, error.message);
+  });
+  return exitOrder;
+}
+
 async function autoPlaceTakeProfit(trade, options = {}) {
   const force = !!options.force;
   if (!trade.takeProfitTargetPrice || trade.side !== "BUY") {
@@ -2510,6 +3064,61 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, snapshot);
     } catch (error) {
       sendJson(res, 400, { error: error.message || "Signal timeframe could not be updated." });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/strategy/short-swing/settings") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    sendJson(res, 200, {
+      settings: getShortSwingSettings(),
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/strategy/short-swing/settings") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    try {
+      const body = await readBody(req);
+      const settings = setShortSwingSettings(body || {});
+      sendJson(res, 200, {
+        settings,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message || "Strategy settings could not be saved." });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/strategy/short-swing/debug") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    try {
+      const debug = await signalEngine.getStrategyDebugSnapshot();
+      const strategyTrades = (db.tradeIntents || [])
+        .filter((trade) => isShortSwingTrade(trade))
+        .slice(0, 12)
+        .map((trade) => serializeTradeForAdmin(trade));
+      const strategyLogs = (db.strategyLogs || []).slice(0, 30);
+
+      sendJson(res, 200, {
+        ...debug,
+        logs: strategyLogs,
+        trades: strategyTrades,
+      });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message || "Strategy debug data could not be loaded." });
     }
     return true;
   }
@@ -3068,62 +3677,9 @@ async function handleApi(req, res, url) {
     try {
       const body = await readBody(req);
       const orderInput = normalizeOrderInput(body);
-      const exchangeInfo = await getExchangeInfo(orderInput.symbol, adminAccount.testnet, exchange);
-      const normalizedOrderInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, orderInput, exchangeInfo);
-      await validateNotionalRule({ ...adminAccount, exchange }, normalizedOrderInput, exchangeInfo);
-      const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedOrderInput, exchange);
-      const trade = {
-        id: randomId(12),
-        createdAt: nowIso(),
-        createdByUserId: admin.id,
-        createdByName: admin.name,
-        exchange,
-        symbol: normalizedOrderInput.symbol,
-        side: normalizedOrderInput.side,
-        type: normalizedOrderInput.type,
-        quantity: normalizedOrderInput.quantity || null,
-        quoteOrderQty: normalizedOrderInput.quoteOrderQty || null,
-        price: normalizedOrderInput.price || null,
-        timeInForce: normalizedOrderInput.timeInForce || null,
-        takeProfitTargetPrice: normalizedOrderInput.takeProfitPrice || null,
-        adminExecution: sanitizeExecution(adminOrder),
-        mirroredExecutions: [],
-        exitOrders: [],
-      };
-
-      for (const follower of getMirroringUsers(exchange)) {
-        const mirroredOrderInput = await buildMirroredEntryOrderForUser(follower, normalizedOrderInput, exchange)
-          .catch((error) => ({
-            __mirrorError: error.message,
-          }));
-        const child = mirroredOrderInput?.__mirrorError
-          ? {
-              userId: follower.id,
-              userName: follower.name,
-              exchange,
-              purpose: "ENTRY",
-              status: "SKIPPED",
-              error: mirroredOrderInput.__mirrorError,
-              order: null,
-            }
-          : await executeOrderForUser(follower, mirroredOrderInput, "ENTRY", exchange);
-        trade.mirroredExecutions.push(child);
-      }
-
-      db.tradeIntents.unshift(trade);
-      persist();
-      await tradeListener.handleTradeCreated(trade).catch((error) => {
-        console.error(`Trade listener create event failed for trade ${trade.id}:`, error.message);
+      const { trade } = await createTradeIntent(admin, exchange, orderInput, {
+        throwOnTpFailure: true,
       });
-      const tpOrder = await autoPlaceTakeProfit(trade, { force: true });
-      if (tpOrder?.adminExecution?.status === "ERROR") {
-        throw new Error(tpOrder.adminExecution.error || `Unable to place the take-profit order on ${exchangeLabel}.`);
-      }
-      if (tpOrder) {
-        await tradeListener.handleExitOrderCreated(trade, tpOrder).catch((error) => {
-          console.error(`Trade listener take-profit placement failed for trade ${trade.id}:`, error.message);
-        });
-      }
       sendJson(res, 201, { trade: serializeTradeForAdmin(trade) });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
@@ -3245,107 +3801,11 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      const exchangeInfo = await getExchangeInfo(trade.symbol, adminAccount.testnet, exchange);
-      await cancelActiveTakeProfitOrders(trade);
-      const quantity =
-        type === "MARKET"
-          ? await getMaxSellQuantityForAccount({ ...adminAccount, exchange }, trade.symbol, exchangeInfo, type)
-          : String(body.quantity || getRemainingTradeQuantity(trade) || "").trim() || undefined;
-
-      if (!quantity) {
-        sendJson(res, 400, { error: "No remaining quantity is available to close this trade." });
-        return true;
-      }
-
-      const exitOrder = {
-        id: randomId(10),
+      await executeTradeExit(trade, admin, {
         kind: "MANUAL_SELL",
-        createdAt: nowIso(),
-        side: "SELL",
         type,
-        price: price || null,
-        quantity,
-        exchange,
-        adminExecution: null,
-        mirroredExecutions: [],
-      };
-
-      const exitInput = {
-        symbol: trade.symbol,
-        side: "SELL",
-        type,
-        quantity,
         price,
-        timeInForce: type === "LIMIT" ? "GTC" : undefined,
-      };
-      const normalizedExitInput = await normalizeOrderForExchange({ ...adminAccount, exchange }, exitInput, exchangeInfo);
-      exitOrder.quantity = normalizedExitInput.quantity || exitOrder.quantity;
-      await validateNotionalRule({ ...adminAccount, exchange }, normalizedExitInput, exchangeInfo);
-      const adminOrder = await placeSpotOrder({ ...adminAccount, exchange }, normalizedExitInput, exchange);
-      exitOrder.adminExecution = sanitizeExecution(adminOrder);
-
-      for (const child of trade.mirroredExecutions || []) {
-        const user = db.users.find((item) => item.id === child.userId);
-        const childAccount = getExchangeAccount(user, normalizeExchange(child.exchange, exchange));
-        let childQty = "";
-
-        if (childAccount && type === "MARKET") {
-          try {
-            childQty = await getMaxSellQuantityForAccount(
-              { ...childAccount, exchange: normalizeExchange(child.exchange, exchange) },
-              trade.symbol,
-              null,
-              type
-            );
-          } catch (error) {
-            exitOrder.mirroredExecutions.push({
-              userId: child.userId,
-              userName: child.userName,
-              exchange: normalizeExchange(child.exchange, exchange),
-              purpose: "MANUAL_SELL",
-              status: "SKIPPED",
-              error: error.message,
-              order: null,
-            });
-            continue;
-          }
-        } else {
-          childQty = String(body.quantity || getRemainingTradeQuantity(trade, child.userId) || "").trim();
-        }
-
-        if (!user || !childQty) {
-          exitOrder.mirroredExecutions.push({
-            userId: child.userId,
-            userName: child.userName,
-            exchange: normalizeExchange(child.exchange, exchange),
-            purpose: "MANUAL_SELL",
-            status: "SKIPPED",
-            error: "No filled quantity available for mirrored sell.",
-            order: null,
-          });
-          continue;
-        }
-
-        const childExecution = await executeOrderForUser(
-          user,
-          {
-            symbol: trade.symbol,
-            side: "SELL",
-            type,
-            quantity: childQty,
-            price,
-            timeInForce: type === "LIMIT" ? "GTC" : undefined,
-          },
-          "MANUAL_SELL",
-          normalizeExchange(child.exchange, exchange)
-        );
-        exitOrder.mirroredExecutions.push(childExecution);
-      }
-
-      trade.exitOrders.push(exitOrder);
-      persist();
-      await tradeListener.handleExitOrderCreated(trade, exitOrder).catch((error) => {
-        console.error(`Trade listener exit event failed for trade ${trade.id}:`, error.message);
+        quantity: body.quantity ? String(body.quantity).trim() : undefined,
       });
       sendJson(res, 200, { trade: serializeTradeForAdmin(trade) });
       return true;
@@ -3402,7 +3862,10 @@ const server = http.createServer(async (req, res) => {
 async function startServer() {
   db = await loadDb();
   ensureAdminUser(db);
-  await signalEngine.setTimeframe(db.meta?.signalTimeframe);
+  signalEngine.setStrategySettings(getShortSwingSettings());
+  await signalEngine.setTimeframe(db.meta?.signalTimeframe).catch(async () => {
+    await signalEngine.setTimeframe("15m");
+  });
   signalEngine.hydrateSignals(db.signals || []);
   sweepExpiredSignals();
   db.signals = signalEngine.getStoredSignals();

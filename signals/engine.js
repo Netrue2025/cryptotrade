@@ -1,10 +1,10 @@
 const EventEmitter = require("node:events");
 
-const { calculateEmaSeries, calculateRsiSeries, getAverageVolume, getRollingLevels, toFixedNumber } = require("../indicators/market-indicators");
-const { evaluateBreakoutConfirmation } = require("../strategies/breakout-confirmation");
-const { evaluateEmaRsiPullback } = require("../strategies/ema-rsi-pullback");
-const { evaluateResistanceTouch } = require("../strategies/resistance-touch");
-const { evaluateSupportTouch } = require("../strategies/support-touch");
+const { calculateEmaSeries, getAverageVolume, getRollingLevels, toFixedNumber } = require("../indicators/market-indicators");
+const { getCandles: getBinanceCandles } = require("../lib/binance");
+const { getCandles: getBybitCandles } = require("../lib/bybit");
+const { DEFAULT_SHORT_SWING_SETTINGS, normalizeShortSwingSettings } = require("../strategies/short-swing-config");
+const { evaluateShortSwingSpotDetailed } = require("../strategies/short-swing-spot");
 const {
   ACTIVE_SIGNAL_STATUS,
   LEVEL_LOOKBACK,
@@ -21,6 +21,7 @@ const { SignalStore } = require("./store");
 const { BinanceSignalStream } = require("../websocket/binance-signal-stream");
 
 const STRATEGY_PRIORITY = {
+  SWING_SPOT: 5,
   BREAKOUT: 4,
   SUPPORT: 3,
   EMA_RSI: 2,
@@ -48,7 +49,7 @@ function normalizeIncomingCandle(candle) {
     low: Number(candle.low || 0),
     close: Number(candle.close || 0),
     volume: Number(candle.volume || 0),
-    isClosed: !!candle.isClosed,
+    isClosed: candle.isClosed === undefined ? true : !!candle.isClosed,
   };
 }
 
@@ -63,7 +64,12 @@ class SignalEngine extends EventEmitter {
     this.timeframe = this.normalizeTimeframe(timeframe);
     this.stream = this.createStream(this.timeframe);
     this.started = false;
-    this.boundOnKline = (payload) => this.handleKline(payload);
+    this.marketContextCache = new Map();
+    this.marketContextInflight = new Map();
+    this.strategySettings = normalizeShortSwingSettings(DEFAULT_SHORT_SWING_SETTINGS, DEFAULT_SHORT_SWING_SETTINGS);
+    this.boundOnKline = (payload) => {
+      void this.handleKline(payload);
+    };
     this.boundOnStatus = (status) => this.emit("status", status);
     this.boundOnError = (error) => this.emit("status", { ok: false, message: error.message || "Signal engine error." });
   }
@@ -126,6 +132,16 @@ class SignalEngine extends EventEmitter {
 
   getTimeframe() {
     return this.timeframe;
+  }
+
+  getStrategySettings() {
+    return { ...this.strategySettings };
+  }
+
+  setStrategySettings(settings = {}) {
+    this.strategySettings = normalizeShortSwingSettings(settings, DEFAULT_SHORT_SWING_SETTINGS);
+    this.emit("snapshot", this.getSnapshot());
+    return this.getStrategySettings();
   }
 
   async setTimeframe(timeframe) {
@@ -218,7 +234,10 @@ class SignalEngine extends EventEmitter {
         close: Number(candle.close || 0),
         volume: Number(candle.volume || 0),
       })),
-      ema50: pairState.emaSeries
+      ema20: pairState.ema20Series
+        .map((value, index) => (value ? { time: Math.floor(Number(pairState.candles[index].openTime || 0) / 1000), value } : null))
+        .filter(Boolean),
+      ema50: pairState.ema50Series
         .map((value, index) => (value ? { time: Math.floor(Number(pairState.candles[index].openTime || 0) / 1000), value } : null))
         .filter(Boolean),
       supportLevel: signal?.supportLevel || pairState.supportLevel || null,
@@ -230,7 +249,7 @@ class SignalEngine extends EventEmitter {
     };
   }
 
-  handleKline({ pair, candle }) {
+  async handleKline({ pair, candle }) {
     const existingState = this.store.getPairState(pair);
     const candles = Array.isArray(existingState?.candles) ? [...existingState.candles] : [];
     const normalized = normalizeIncomingCandle(candle);
@@ -247,25 +266,34 @@ class SignalEngine extends EventEmitter {
     this.store.upsertPairState(pair, nextState);
 
     if (normalized.isClosed) {
-      const nextSignal = this.evaluatePair(nextState);
-      if (nextSignal) {
-        const recordedSignal = this.store.recordSignal(nextSignal);
-        this.emit("signal", recordedSignal);
-        this.emit("snapshot", this.getSnapshot());
+      try {
+        const nextSignal = await this.evaluatePair(nextState);
+        if (nextSignal) {
+          const recordedSignal = this.store.recordSignal(nextSignal);
+          this.emit("signal", recordedSignal);
+          this.emit("snapshot", this.getSnapshot());
+        }
+      } catch (error) {
+        this.emit("status", {
+          ok: false,
+          message: `${pair} strategy evaluation failed: ${error.message || "Unknown error."}`,
+        });
       }
     }
   }
 
   buildPairState(pair, candles) {
-    const emaSeries = calculateEmaSeries(candles, 50);
-    const rsiSeries = calculateRsiSeries(candles, 14);
+    const ema20Series = calculateEmaSeries(candles, 20);
+    const ema50Series = calculateEmaSeries(candles, 50);
+    const ema200Series = calculateEmaSeries(candles, 200);
     const { support, resistance } = getRollingLevels(candles, LEVEL_LOOKBACK);
 
     return {
       pair,
       candles,
-      emaSeries,
-      rsiSeries,
+      ema20Series,
+      ema50Series,
+      ema200Series,
       supportLevel: toFixedNumber(support),
       resistanceLevel: toFixedNumber(resistance),
       averageVolume: getAverageVolume(candles, 20),
@@ -273,40 +301,142 @@ class SignalEngine extends EventEmitter {
     };
   }
 
-  evaluatePair(pairState) {
+  async getMarketCandles(symbol, interval, limit) {
+    const cacheKey = `${symbol}:${interval}:${limit}`;
+    const cached = this.marketContextCache.get(cacheKey);
+    if (cached && Date.now() - cached.updatedAt < 20_000) {
+      return cached.value;
+    }
+
+    if (this.marketContextInflight.has(cacheKey)) {
+      return this.marketContextInflight.get(cacheKey);
+    }
+
+    const pending = (async () => {
+      let candles = [];
+      try {
+        candles = await getBinanceCandles(symbol, interval, limit, false);
+      } catch {
+        candles = [];
+      }
+
+      if (!Array.isArray(candles) || candles.length < Math.min(limit, 24)) {
+        const fallback = await getBybitCandles(symbol, interval, limit, false).catch(() => []);
+        if (Array.isArray(fallback) && fallback.length > candles.length) {
+          candles = fallback;
+        }
+      }
+
+      const normalized = (candles || []).map(normalizeIncomingCandle);
+      this.marketContextCache.set(cacheKey, {
+        value: normalized,
+        updatedAt: Date.now(),
+      });
+      return normalized;
+    })().finally(() => {
+      this.marketContextInflight.delete(cacheKey);
+    });
+
+    this.marketContextInflight.set(cacheKey, pending);
+    return pending;
+  }
+
+  async evaluatePair(pairState) {
+    const evaluation = await this.evaluatePairDebug(pairState);
+    return evaluation.signal;
+  }
+
+  async evaluatePairDebug(pairState) {
     const candles = pairState.candles || [];
-    if (candles.length < 60) {
-      return null;
+    if (candles.length < 220) {
+      return {
+        pair: pairState.pair,
+        eligible: false,
+        signal: null,
+        confidence: 0,
+        checks: {
+          hasEnoughHistory: false,
+        },
+        metrics: {},
+        failureReasons: ["Waiting for enough candle history."],
+      };
     }
 
     const lastCandle = candles[candles.length - 1];
     const timestamp = Number(lastCandle.closeTime || lastCandle.openTime || Date.now());
-    if (!this.store.canEmit(pairState.pair, timestamp)) {
-      return null;
+    const btcPairState = this.store.getPairState("BTCUSDT");
+    const [trendCandles, relativeStrengthCandles, btcRelativeStrengthCandles] = await Promise.all([
+      this.getMarketCandles(pairState.pair, "1h", 260),
+      this.getMarketCandles(pairState.pair, "4h", 12),
+      this.getMarketCandles("BTCUSDT", "4h", 12),
+    ]);
+
+    const evaluation = evaluateShortSwingSpotDetailed({
+      pair: pairState.pair,
+      entryCandles: candles,
+      trendCandles,
+      btcEntryCandles: btcPairState?.candles || [],
+      relativeStrengthCandles,
+      btcRelativeStrengthCandles,
+      timestamp,
+      settings: this.strategySettings,
+    });
+
+    const canEmit = this.store.canEmit(pairState.pair, timestamp);
+    const confidence = Number(evaluation?.signal?.confidence || evaluation?.confidence || 0);
+    if (!canEmit) {
+      return {
+        ...evaluation,
+        eligible: false,
+        signal: null,
+        failureReasons: [...(evaluation.failureReasons || []), "Cooldown is still active for this pair."],
+      };
+    }
+    if (!evaluation.signal || confidence < MIN_CONFIDENCE) {
+      return {
+        ...evaluation,
+        eligible: false,
+        signal: null,
+        failureReasons: confidence > 0 && confidence < MIN_CONFIDENCE
+          ? [...(evaluation.failureReasons || []), `Confidence ${confidence}% is below the ${MIN_CONFIDENCE}% threshold.`]
+          : evaluation.failureReasons || [],
+      };
     }
 
-    const context = {
-      pair: pairState.pair,
-      candles,
-      emaSeries: pairState.emaSeries,
-      rsiSeries: pairState.rsiSeries,
-      supportLevel: pairState.supportLevel,
-      resistanceLevel: pairState.resistanceLevel,
-      averageVolume: pairState.averageVolume,
-      timestamp,
+    return evaluation;
+  }
+
+  async getStrategyDebugSnapshot() {
+    const evaluations = await Promise.all(
+      SIGNAL_PAIRS.map(async (pair) => {
+        const pairState = this.store.getPairState(pair);
+        if (!pairState) {
+          return {
+            pair,
+            eligible: false,
+            signal: null,
+            confidence: 0,
+            checks: {
+              hasEnoughHistory: false,
+            },
+            metrics: {},
+            failureReasons: ["Signal state has not been seeded yet."],
+          };
+        }
+        return this.evaluatePairDebug(pairState);
+      })
+    );
+
+    return {
+      generatedAt: new Date().toISOString(),
+      settings: this.getStrategySettings(),
+      evaluations: evaluations.sort((a, b) => {
+        if (a.eligible !== b.eligible) {
+          return a.eligible ? -1 : 1;
+        }
+        return Number(b.confidence || 0) - Number(a.confidence || 0);
+      }),
     };
-
-    const candidates = [
-      evaluateBreakoutConfirmation(context),
-      evaluateSupportTouch(context),
-      evaluateEmaRsiPullback(context),
-      evaluateResistanceTouch(context),
-    ]
-      .filter(Boolean)
-      .filter((signal) => Number(signal.confidence || 0) >= MIN_CONFIDENCE)
-      .sort(sortSignals);
-
-    return candidates[0] || null;
   }
 }
 

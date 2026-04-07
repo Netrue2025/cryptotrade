@@ -4,6 +4,7 @@
     RESISTANCE: { label: "Resistance", className: "resistance" },
     EMA_RSI: { label: "EMA-RSI", className: "ema-rsi" },
     BREAKOUT: { label: "Breakout", className: "breakout" },
+    SWING_SPOT: { label: "Swing Spot", className: "breakout" },
   };
 
   let activeChart = null;
@@ -37,7 +38,7 @@
     const deleting = !!signalFeed?.deleting;
     const switchingTimeframe = !!signalFeed?.switchingTimeframe;
     const allSelected = !!signals.length && selectedIds.length === signals.length;
-    const supportedTimeframes = signalFeed?.supportedTimeframes?.length ? signalFeed.supportedTimeframes : ["5m", "30m", "1h"];
+    const supportedTimeframes = signalFeed?.supportedTimeframes?.length ? signalFeed.supportedTimeframes : ["15m"];
 
     return `
       <section class="signal-page-shell">
@@ -51,7 +52,7 @@
             <div class="signal-stream-pill ${statusTone}">
               <span class="signal-stream-dot"></span>
               <strong>${streamLabel}</strong>
-              <span>${signalFeed?.timeframe || "30m"}</span>
+              <span>${signalFeed?.timeframe || "15m"}</span>
             </div>
             <div class="signal-timeframe-toggle" role="group" aria-label="Signal timeframe">
               ${supportedTimeframes
@@ -136,7 +137,7 @@
                 : `
                   <div class="signal-empty-state">
                     <strong>No live BUY setups yet</strong>
-                    <p class="muted-copy">Signals will appear here when support, resistance, EMA-RSI, or breakout confirmation criteria are met.</p>
+                    <p class="muted-copy">Signals will appear here when the 1h uptrend, 15m pullback, breakout, volume, and relative-strength rules align.</p>
                   </div>
                 `
             }
@@ -183,7 +184,7 @@
                 <div id="signal-chart-modal-host" class="signal-chart-modal-host">
                   ${chartPayload ? "" : `<p class="muted-copy">Loading live chart...</p>`}
                 </div>
-                <p class="modal-text">EMA 50 is plotted over live candles, with entry and support/resistance zones highlighted for this BUY alert.</p>
+                <p class="modal-text">The strategy plots the 15m EMA pullback zone with entry and support/resistance levels for this BUY alert.</p>
               `
           }
         </div>
@@ -253,7 +254,7 @@
       priceLineVisible: false,
       lastValueVisible: false,
     });
-    emaSeries.setData(payload.ema50 || []);
+    emaSeries.setData(payload.ema20 || payload.ema50 || []);
 
     candleSeries.createPriceLine({
       price: Number(payload.entryPrice || 0),
