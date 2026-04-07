@@ -33,8 +33,15 @@ const { SubscriberModel } = require("./models/subscriberModel");
 const { DEFAULT_QUALITY_EMA_SETTINGS, normalizeQualityEmaSettings } = require("./strategies/quality-ema-config");
 const { SignalEngine } = require("./signals/engine");
 const { DEFAULT_SHORT_SWING_SETTINGS, normalizeShortSwingSettings } = require("./strategies/short-swing-config");
-const { buildTelegramMessage, sendTelegramAlert } = require("./services/telegram");
+const {
+  buildTelegramMessage,
+  getSignalBotDiagnostics,
+  sendTelegramAlert,
+  sendTelegramText,
+} = require("./services/telegram");
+const { emitOrderExecuted, orderEvents } = require("./services/orderEvents");
 const { TelegramService } = require("./services/telegramService");
+const { TradeLearningService } = require("./services/tradeLearning");
 const { TradeListener } = require("./services/tradeListener");
 const { createBroadcaster } = require("./utils/broadcast");
 
@@ -69,7 +76,10 @@ const SERVICE_RETRY_INTERVAL_MS = 60_000;
 const MAX_STRATEGY_LOG_HISTORY = 1000;
 
 let db = null;
-const signalEngine = new SignalEngine();
+const tradeLearningService = new TradeLearningService();
+const signalEngine = new SignalEngine({
+  tradeLearningService,
+});
 const subscriberModel = new SubscriberModel();
 const telegramTradeService = new TelegramService({
   subscriberModel,
@@ -81,6 +91,11 @@ const signalBroadcaster = createBroadcaster({
 const tradeListener = new TradeListener({
   telegramService: telegramTradeService,
   subscriberModel,
+});
+orderEvents.on("orderExecuted", (orderEvent) => {
+  void tradeListener.handleOrderExecuted(orderEvent).catch((error) => {
+    console.error("Order executed Telegram listener failed:", error.message || error);
+  });
 });
 signalEngine.on("signal", (signal) => {
   void broadcastSignalAlert(signal);
@@ -1714,10 +1729,26 @@ async function reconcileTradeStatuses() {
         changed = true;
       }
 
+      if (
+        String(previousTrade?.adminExecution?.status || "").trim().toUpperCase() !== "FILLED"
+        && String(trade?.adminExecution?.status || "").trim().toUpperCase() === "FILLED"
+      ) {
+        emitOrderExecuted({
+          eventKey: `${trade.id}:${trade.adminExecution?.orderId || trade.adminExecution?.clientOrderId || trade.adminExecution?.transactTime || "entry"}`,
+          exchange,
+          trade,
+          execution: trade.adminExecution,
+          kind: "ENTRY",
+        });
+      }
+
       if (JSON.stringify(previousTrade || null) !== JSON.stringify(trade)) {
         await tradeListener.handleTradeUpdated(previousTrade, trade).catch((error) => {
           console.error(`Trade listener update failed for trade ${trade.id}:`, error.message);
         });
+        if (deriveTradeLifecycle(previousTrade) !== "CLOSED" && deriveTradeLifecycle(trade) === "CLOSED") {
+          await recordTradeForLearning(trade);
+        }
       }
     } catch (error) {
       console.error(`Failed to reconcile trade ${trade.id}:`, error.message);
@@ -1813,6 +1844,144 @@ function hasActiveNonTakeProfitExitExecution(trade) {
 
 function getStrategyReason(trade) {
   return String(trade?.strategyContext?.reason || "").trim() || "Trend Pullback Breakout";
+}
+
+function getFilledExitExecutions(trade) {
+  return (trade?.exitOrders || [])
+    .map((exitOrder) => exitOrder?.adminExecution || null)
+    .filter((execution) => execution && ["FILLED", "PARTIALLY_FILLED"].includes(String(execution.status || "").toUpperCase()));
+}
+
+function getWeightedAverageExecutionPrice(executions = []) {
+  const weighted = executions.reduce((summary, execution) => {
+    const quantity = getExecutionFilledQty(execution);
+    const price = getExecutionAveragePrice(execution);
+    if (quantity <= 0 || price <= 0) {
+      return summary;
+    }
+
+    return {
+      quantity: summary.quantity + quantity,
+      notional: summary.notional + (quantity * price),
+    };
+  }, { quantity: 0, notional: 0 });
+
+  return weighted.quantity > 0 ? weighted.notional / weighted.quantity : 0;
+}
+
+function buildTradeLearningContextFromSignal(signal) {
+  if (!signal || typeof signal !== "object") {
+    return null;
+  }
+
+  return {
+    support: Number(signal.supportLevel || signal?.meta?.supportLevel || 0) || null,
+    resistance: Number(signal.resistanceLevel || signal?.meta?.resistanceLevel || 0) || null,
+    confidence: Number(signal.confidence || 0) || null,
+    confidenceScore: Number(signal?.meta?.confidenceScore || 0) || null,
+    indicators: {
+      emaFast: Number(signal?.meta?.emaFast || 0) || null,
+      emaSlow: Number(signal?.meta?.emaSlow || 0) || null,
+      entryEmaFast: Number(signal?.meta?.entryEmaFast || 0) || null,
+      entryEmaSlow: Number(signal?.meta?.entryEmaSlow || 0) || null,
+      trendEmaFast: Number(signal?.meta?.trendEmaFast || 0) || null,
+      trendEmaSlow: Number(signal?.meta?.trendEmaSlow || 0) || null,
+      dailyEmaFast: Number(signal?.meta?.dailyEmaFast || 0) || null,
+      dailyEmaSlow: Number(signal?.meta?.dailyEmaSlow || 0) || null,
+      rsiEntry: Number(signal?.meta?.entryRsi || signal?.meta?.rsi14 || 0) || null,
+      rsiTrend: Number(signal?.meta?.trendRsi || 0) || null,
+      rsiOversold: Number(signal?.meta?.rsiOversold || 0) || null,
+      rsiOverbought: Number(signal?.meta?.rsiOverbought || 0) || null,
+      emaGapPercent: Number(signal?.meta?.emaGapPercent || 0) || null,
+      trendEmaGapPercent: Number(signal?.meta?.trendEmaGapPercent || 0) || null,
+      supportDistancePercent: Number(signal?.meta?.supportDistancePercent || 0) || null,
+      adaptiveStrategyEnabled: !!signal?.meta?.adaptiveStrategyEnabled,
+      adaptiveSource: String(signal?.meta?.adaptiveSource || "").trim() || null,
+      adaptiveSampleSize: Number(signal?.meta?.adaptiveSampleSize || 0) || null,
+    },
+  };
+}
+
+function buildClosedTradeLearningRecord(trade) {
+  if (!trade || trade.side !== "BUY") {
+    return null;
+  }
+
+  const lifecycle = deriveTradeLifecycle(trade);
+  if (lifecycle !== "CLOSED") {
+    return null;
+  }
+
+  const entryPrice = getExecutionAveragePrice(trade.adminExecution) || Number(trade.price || 0);
+  const exitExecutions = getFilledExitExecutions(trade);
+  const exitPrice = getWeightedAverageExecutionPrice(exitExecutions);
+  const quantity = Math.min(getTradeFilledEntryQuantity(trade), getTradeExitedQuantity(trade));
+  if (entryPrice <= 0 || exitPrice <= 0 || quantity <= 0) {
+    return null;
+  }
+
+  const profitValue = (exitPrice - entryPrice) * quantity;
+  const profitPercent = entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+  const learningContext = trade?.strategyContext?.learningContext || {};
+
+  return {
+    tradeKey: String(trade.id),
+    tradeId: String(trade.id),
+    strategyType: String(
+      trade?.strategyContext?.type === "QUALITY_EMA_SUPPORT_RESISTANCE"
+        ? "QUALITY_ERS"
+        : trade?.strategyContext?.type === "SHORT_SWING_SPOT"
+          ? "SWING_SPOT"
+          : trade?.strategyContext?.type || "MANUAL"
+    ).trim().toUpperCase(),
+    exchange: getTradeExchange(trade),
+    symbol: String(trade.symbol || "").trim().toUpperCase(),
+    entryPrice,
+    exitPrice,
+    side: String(trade.side || "").trim().toUpperCase(),
+    indicators: {
+      ...(learningContext.indicators || {}),
+    },
+    support: Number(learningContext.support || 0) || null,
+    resistance: Number(learningContext.resistance || 0) || null,
+    result: profitPercent >= 0 ? "win" : "loss",
+    profitPercent: Number(profitPercent.toFixed(6)),
+    profitValue: Number(profitValue.toFixed(6)),
+    entryQuantity: Number(quantity.toFixed(8)),
+    reason: getStrategyReason(trade),
+    timestamp: trade.createdAt || nowIso(),
+    closedAt: exitExecutions[exitExecutions.length - 1]?.transactTime
+      ? new Date(Number(exitExecutions[exitExecutions.length - 1].transactTime)).toISOString()
+      : nowIso(),
+  };
+}
+
+async function recordTradeForLearning(trade) {
+  const learningRecord = buildClosedTradeLearningRecord(trade);
+  if (!learningRecord) {
+    return { ok: false, skipped: true, reason: "trade_not_ready" };
+  }
+
+  return tradeLearningService.recordTrade(learningRecord).catch((error) => {
+    console.error(`Trade learning record failed for ${learningRecord.tradeId}:`, error.message || error);
+    return { ok: false, skipped: false, error: error.message || String(error) };
+  });
+}
+
+async function syncTradeLearningHistory() {
+  if (!tradeLearningService.isEnabled()) {
+    return;
+  }
+
+  let syncedCount = 0;
+  for (const trade of db.tradeIntents || []) {
+    const result = await recordTradeForLearning(trade);
+    if (result?.ok) {
+      syncedCount += 1;
+    }
+  }
+
+  console.log(`Trade learning history sync complete. ${syncedCount} closed trade${syncedCount === 1 ? "" : "s"} indexed.`);
 }
 
 function getTradeDayKey(value) {
@@ -2004,6 +2173,7 @@ function queueShortSwingSignal(signal) {
           signalTimestamp: signal.timestamp,
           reason: String(signal?.meta?.reason || "Trend Pullback Breakout"),
           signalReason: String(signal?.meta?.reason || "Trend Pullback Breakout"),
+          learningContext: buildTradeLearningContextFromSignal(signal),
           breakevenTriggerPrice: String(
             Number(signal?.meta?.breakevenTriggerPrice || 0)
             || Number(signal.entryPrice || 0) * (1 + settings.breakevenTriggerPercent / 100)
@@ -2122,6 +2292,7 @@ function queueQualityEmaSignal(signal) {
           signalTimestamp: signal.timestamp,
           reason: String(signal?.meta?.reason || "EMA RSI Support Resistance"),
           signalReason: String(signal?.meta?.reason || "EMA RSI Support Resistance"),
+          learningContext: buildTradeLearningContextFromSignal(signal),
           breakevenTriggerPrice: String(
             Number(signal?.meta?.breakevenTriggerPrice || 0)
             || Number(signal.entryPrice || 0) * (1 + settings.breakevenTriggerPercent / 100)
@@ -2773,6 +2944,15 @@ async function createTradeIntent(admin, exchange, orderInput, options = {}) {
   await tradeListener.handleTradeCreated(trade).catch((error) => {
     console.error(`Trade listener create event failed for trade ${trade.id}:`, error.message);
   });
+  if (String(trade.adminExecution?.status || "").trim().toUpperCase() === "FILLED") {
+    emitOrderExecuted({
+      eventKey: `${trade.id}:${trade.adminExecution?.orderId || trade.adminExecution?.clientOrderId || "entry"}`,
+      exchange,
+      trade,
+      execution: trade.adminExecution,
+      kind: "ENTRY",
+    });
+  }
 
   let tpOrder = null;
   if (trade.takeProfitTargetPrice && trade.side === "BUY") {
@@ -3415,6 +3595,77 @@ async function handleApi(req, res, url) {
       });
     } catch (error) {
       sendJson(res, 500, { error: error.message || "Strategy debug data could not be loaded." });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/trade-learning/summary") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    try {
+      const summary = await tradeLearningService.analyzePerformance({
+        strategyType: String(url.searchParams.get("strategyType") || "QUALITY_ERS").trim().toUpperCase(),
+      });
+      const adaptiveParameters = await tradeLearningService.getAdaptiveParameters({
+        strategyType: String(url.searchParams.get("strategyType") || "QUALITY_ERS").trim().toUpperCase(),
+        defaults: {},
+      });
+      sendJson(res, 200, {
+        summary,
+        adaptiveParameters,
+      });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message || "Trade learning summary could not be loaded." });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/test-telegram") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    const scope = String(url.searchParams.get("scope") || "signal").trim().toLowerCase();
+    const diagnostics = {
+      signalBot: getSignalBotDiagnostics(),
+      tradeBot: telegramTradeService.getDiagnostics ? telegramTradeService.getDiagnostics() : {},
+      subscriberStoreEnabled: !!subscriberModel?.isEnabled?.(),
+    };
+
+    try {
+      let result = null;
+      if (scope === "trade") {
+        await ensureTradeListenerRunning();
+        result = await tradeListener.broadcast(
+          `Telegram trade bot test\nTime: ${new Date().toISOString()}\nStatus: listener active`,
+          "signal",
+          {
+            telegramOptions: {
+              disable_web_page_preview: true,
+            },
+          }
+        );
+      } else {
+        result = await sendTelegramText(`Telegram signal bot test\nTime: ${new Date().toISOString()}`);
+      }
+
+      sendJson(res, 200, {
+        ok: true,
+        scope,
+        diagnostics,
+        result,
+      });
+    } catch (error) {
+      sendJson(res, 500, {
+        ok: false,
+        scope,
+        diagnostics,
+        error: error.message || "Telegram test failed.",
+      });
     }
     return true;
   }
@@ -4158,6 +4409,7 @@ const server = http.createServer(async (req, res) => {
 async function startServer() {
   db = await loadDb();
   ensureAdminUser(db);
+  await tradeLearningService.init();
   signalEngine.setStrategySettings({
     shortSwing: getShortSwingSettings(),
     qualityEma: getQualityEmaSettings(),
@@ -4173,6 +4425,8 @@ async function startServer() {
     signalTimeframe: signalEngine.getTimeframe(),
   };
   await saveDb(db);
+  await syncTradeLearningHistory();
+  console.log(`Telegram signal bot diagnostics: ${JSON.stringify(getSignalBotDiagnostics())}`);
   await ensureTradeListenerRunning(true);
   await ensureSignalEngineRunning(true);
   void startTradeReconciliation(true);

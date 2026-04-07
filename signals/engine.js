@@ -3,7 +3,11 @@ const EventEmitter = require("node:events");
 const { calculateEmaSeries, getAverageVolume, getRollingLevels, toFixedNumber } = require("../indicators/market-indicators");
 const { getCandles: getBinanceCandles } = require("../lib/binance");
 const { getCandles: getBybitCandles } = require("../lib/bybit");
-const { DEFAULT_QUALITY_EMA_SETTINGS, normalizeQualityEmaSettings } = require("../strategies/quality-ema-config");
+const {
+  DEFAULT_QUALITY_EMA_SETTINGS,
+  getQualityEmaStrategyParameters,
+  normalizeQualityEmaSettings,
+} = require("../strategies/quality-ema-config");
 const { evaluateQualityEmaSupportResistanceDetailed } = require("../strategies/quality-ema-support-resistance");
 const { DEFAULT_SHORT_SWING_SETTINGS, normalizeShortSwingSettings } = require("../strategies/short-swing-config");
 const { evaluateShortSwingSpotDetailed } = require("../strategies/short-swing-spot");
@@ -57,7 +61,7 @@ function normalizeIncomingCandle(candle) {
 }
 
 class SignalEngine extends EventEmitter {
-  constructor({ timeframe } = {}) {
+  constructor({ timeframe, tradeLearningService = null } = {}) {
     super();
     this.store = new SignalStore({
       maxSignalHistory: MAX_SIGNAL_HISTORY,
@@ -65,6 +69,7 @@ class SignalEngine extends EventEmitter {
       expiryMs: SIGNAL_EXPIRY_MS,
     });
     this.timeframe = this.normalizeTimeframe(timeframe);
+    this.tradeLearningService = tradeLearningService || null;
     this.stream = this.createStream(this.timeframe);
     this.started = false;
     this.marketContextCache = new Map();
@@ -383,6 +388,12 @@ class SignalEngine extends EventEmitter {
       this.getMarketCandles(pairState.pair, "4h", 12),
       this.getMarketCandles("BTCUSDT", "4h", 12),
     ]);
+    const adaptiveQualityParameters = this.tradeLearningService?.getAdaptiveParameters
+      ? await this.tradeLearningService.getAdaptiveParameters({
+          strategyType: "QUALITY_ERS",
+          defaults: getQualityEmaStrategyParameters(this.strategySettings.qualityEma),
+        }).catch(() => getQualityEmaStrategyParameters(this.strategySettings.qualityEma))
+      : getQualityEmaStrategyParameters(this.strategySettings.qualityEma);
 
     const evaluations = [
       evaluateQualityEmaSupportResistanceDetailed({
@@ -392,6 +403,7 @@ class SignalEngine extends EventEmitter {
         dailyCandles,
         timestamp,
         settings: this.strategySettings.qualityEma,
+        adaptiveParameters: adaptiveQualityParameters,
       }),
       evaluateShortSwingSpotDetailed({
         pair: pairState.pair,

@@ -244,6 +244,7 @@ class TradeListener {
     this.bybitDailyProfit = 0;
     this.binanceTargetHit = false;
     this.bybitTargetHit = false;
+    this.processedOrderExecutionKeys = new Map();
     this.resetTask = null;
     this.started = false;
   }
@@ -255,6 +256,9 @@ class TradeListener {
 
     if (this.telegramService?.start) {
       await this.telegramService.start();
+      if (this.telegramService?.getDiagnostics) {
+        this.logger.log(`Telegram trade bot diagnostics: ${JSON.stringify(this.telegramService.getDiagnostics())}`);
+      }
     }
 
     if (!this.resetTask) {
@@ -333,17 +337,10 @@ class TradeListener {
 
     const exchange = normalizeExchange(trade.exchange);
     if (isManagedStrategyTrade(trade)) {
-      if (getExecutionStatus(trade.adminExecution) === "FILLED") {
-        await this.broadcast(buildShortSwingExecutedMessage(trade), exchange, { exchange });
-      }
       return;
     }
 
     await this.broadcast(buildOrderPlacedMessage({ exchange, trade }), exchange, { exchange });
-
-    if (getExecutionStatus(trade.adminExecution) === "FILLED") {
-      await this.broadcast(buildOrderFilledMessage({ exchange, trade }), exchange, { exchange });
-    }
   }
 
   async handleExitOrderCreated(trade, exitOrder) {
@@ -367,16 +364,6 @@ class TradeListener {
     }
 
     const exchange = normalizeExchange(nextTrade.exchange);
-    const previousEntryStatus = getExecutionStatus(previousTrade?.adminExecution);
-    const nextEntryStatus = getExecutionStatus(nextTrade.adminExecution);
-    if (previousEntryStatus !== "FILLED" && nextEntryStatus === "FILLED") {
-      if (isManagedStrategyTrade(nextTrade)) {
-        await this.broadcast(buildShortSwingExecutedMessage(nextTrade), exchange, { exchange });
-      } else {
-      await this.broadcast(buildOrderFilledMessage({ exchange, trade: nextTrade }), exchange, { exchange });
-      }
-    }
-
     const previousExitOrders = getExitOrderMap(previousTrade);
     for (const exitOrder of nextTrade.exitOrders || []) {
       const previousExitOrder = previousExitOrders.get(exitOrder.id);
@@ -418,6 +405,42 @@ class TradeListener {
     }
 
     await this.updateDailyProfit(exchange, profitPercent);
+  }
+
+  async handleOrderExecuted(orderEvent = {}) {
+    const trade = orderEvent.trade || null;
+    if (!trade?.symbol) {
+      return { ok: false, skipped: true, reason: "missing_trade" };
+    }
+
+    const execution = orderEvent.execution || trade.adminExecution || null;
+    const eventKey = String(
+      orderEvent.eventKey
+      || `${trade.id}:${execution?.orderId || execution?.clientOrderId || execution?.transactTime || "entry"}`
+    ).trim();
+    if (!eventKey) {
+      return { ok: false, skipped: true, reason: "missing_event_key" };
+    }
+
+    const now = Date.now();
+    for (const [key, value] of this.processedOrderExecutionKeys.entries()) {
+      if (now - value > 24 * 60 * 60 * 1000) {
+        this.processedOrderExecutionKeys.delete(key);
+      }
+    }
+    if (this.processedOrderExecutionKeys.has(eventKey)) {
+      return { ok: true, skipped: true, reason: "duplicate_order_execution" };
+    }
+    this.processedOrderExecutionKeys.set(eventKey, now);
+
+    const exchange = normalizeExchange(orderEvent.exchange || trade.exchange);
+    if (isManagedStrategyTrade(trade)) {
+      await this.broadcast(buildShortSwingExecutedMessage(trade), exchange, { exchange });
+      return { ok: true, managed: true };
+    }
+
+    await this.broadcast(buildOrderFilledMessage({ exchange, trade }), exchange, { exchange });
+    return { ok: true, managed: false };
   }
 
   async updateDailyProfit(exchange, profitPercent) {

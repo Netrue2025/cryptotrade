@@ -3,6 +3,22 @@ const { disableBrokenLocalProxyEnv } = require("../lib/network");
 
 const sentSignalKeys = new Set();
 
+function getSignalBotConfig() {
+  return {
+    token: String(process.env.TELEGRAM_SIGNAL_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "").trim(),
+    chatId: String(process.env.TELEGRAM_SIGNAL_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "").trim(),
+  };
+}
+
+function getSignalBotDiagnostics() {
+  const config = getSignalBotConfig();
+  return {
+    tokenLoaded: !!config.token,
+    chatIdLoaded: !!config.chatId,
+    tokenPreview: config.token ? `${config.token.slice(0, 6)}...${config.token.slice(-4)}` : "",
+  };
+}
+
 function getStrategyEmoji(type) {
   const value = String(type || "").trim().toUpperCase();
   const map = {
@@ -133,8 +149,7 @@ function buildTelegramMessage(signal) {
 async function sendTelegramAlert(signal) {
   disableBrokenLocalProxyEnv(console, "Telegram signal alerts");
 
-  const token = String(process.env.TELEGRAM_SIGNAL_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const chatId = String(process.env.TELEGRAM_SIGNAL_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "").trim();
+  const { token, chatId } = getSignalBotConfig();
 
   if (!token || !chatId) {
     console.warn("Telegram alert skipped: TELEGRAM_SIGNAL_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_SIGNAL_CHAT_ID/TELEGRAM_CHAT_ID is missing.");
@@ -191,11 +206,42 @@ async function sendTelegramAlert(signal) {
   }
 }
 
+async function sendTelegramText(text, options = {}) {
+  disableBrokenLocalProxyEnv(console, "Telegram signal bot test");
+
+  const { token, chatId } = getSignalBotConfig();
+  if (!token || !chatId) {
+    throw new Error("TELEGRAM_SIGNAL_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_SIGNAL_CHAT_ID/TELEGRAM_CHAT_ID is missing.");
+  }
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const response = await axios.post(
+    url,
+    {
+      chat_id: chatId,
+      text: String(text || "").trim() || "Signal bot test message",
+      parse_mode: options.parse_mode || "Markdown",
+      disable_web_page_preview: options.disable_web_page_preview !== false,
+    },
+    {
+      timeout: 15000,
+      proxy: false,
+    }
+  );
+
+  return {
+    ok: true,
+    messageId: response.data?.result?.message_id || null,
+  };
+}
+
 module.exports = {
   buildTelegramMessage,
   formatSignalPair,
   formatTelegramTime,
+  getSignalBotDiagnostics,
   getStrategyEmoji,
   normalizeConfidence,
   sendTelegramAlert,
+  sendTelegramText,
 };

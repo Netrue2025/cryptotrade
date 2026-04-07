@@ -1,6 +1,10 @@
 const { calculateEmaSeries, calculateRsiSeries, getAverageVolume, toFixedNumber } = require("../indicators/market-indicators");
 const { buildSignal, clamp } = require("./shared");
-const { DEFAULT_QUALITY_EMA_SETTINGS, normalizeQualityEmaSettings } = require("./quality-ema-config");
+const {
+  DEFAULT_QUALITY_EMA_SETTINGS,
+  getQualityEmaStrategyParameters,
+  normalizeQualityEmaSettings,
+} = require("./quality-ema-config");
 
 function getWindowExtremes(candles = []) {
   const highs = candles.map((candle) => Number(candle.high || 0)).filter((value) => value > 0);
@@ -51,9 +55,27 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
     dailyCandles,
     timestamp,
     settings: rawSettings,
+    adaptiveParameters = null,
   } = context;
 
   const settings = normalizeQualityEmaSettings(rawSettings, DEFAULT_QUALITY_EMA_SETTINGS);
+  const strategyParameters = {
+    ...getQualityEmaStrategyParameters(settings),
+    ...(adaptiveParameters && settings.useAdaptiveStrategy ? adaptiveParameters : {}),
+  };
+  const {
+    emaFast,
+    emaSlow,
+    trendEmaFast,
+    trendEmaSlow,
+    dailyEmaFast,
+    dailyEmaSlow,
+    rsiOversold,
+    rsiOverbought,
+    supportResistanceTolerancePercent,
+    emaCrossoverSensitivityPercent,
+    minimumConfidenceScore,
+  } = strategyParameters;
   const lastEntryCandle = entryCandles[entryCandles.length - 1];
   const previousEntryCandle = entryCandles[entryCandles.length - 2];
   const lastTrendCandle = trendCandles[trendCandles.length - 1];
@@ -77,21 +99,21 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
     };
   }
 
-  const entryEma20Series = calculateEmaSeries(entryCandles, 20);
-  const entryEma50Series = calculateEmaSeries(entryCandles, 50);
-  const trendEma50Series = calculateEmaSeries(trendCandles, 50);
-  const trendEma200Series = calculateEmaSeries(trendCandles, 200);
-  const dailyEma50Series = calculateEmaSeries(dailyCandles, 50);
-  const dailyEma200Series = calculateEmaSeries(dailyCandles, 200);
+  const entryEmaFastSeries = calculateEmaSeries(entryCandles, emaFast);
+  const entryEmaSlowSeries = calculateEmaSeries(entryCandles, emaSlow);
+  const trendEmaFastSeries = calculateEmaSeries(trendCandles, trendEmaFast);
+  const trendEmaSlowSeries = calculateEmaSeries(trendCandles, trendEmaSlow);
+  const dailyEmaFastSeries = calculateEmaSeries(dailyCandles, dailyEmaFast);
+  const dailyEmaSlowSeries = calculateEmaSeries(dailyCandles, dailyEmaSlow);
   const entryRsiSeries = calculateRsiSeries(entryCandles, 14);
   const trendRsiSeries = calculateRsiSeries(trendCandles, 14);
 
-  const entryEma20 = Number(entryEma20Series[entryEma20Series.length - 1] || 0);
-  const entryEma50 = Number(entryEma50Series[entryEma50Series.length - 1] || 0);
-  const trendEma50 = Number(trendEma50Series[trendEma50Series.length - 1] || 0);
-  const trendEma200 = Number(trendEma200Series[trendEma200Series.length - 1] || 0);
-  const dailyEma50 = Number(dailyEma50Series[dailyEma50Series.length - 1] || 0);
-  const dailyEma200 = Number(dailyEma200Series[dailyEma200Series.length - 1] || 0);
+  const entryEmaFastValue = Number(entryEmaFastSeries[entryEmaFastSeries.length - 1] || 0);
+  const entryEmaSlowValue = Number(entryEmaSlowSeries[entryEmaSlowSeries.length - 1] || 0);
+  const trendEmaFastValue = Number(trendEmaFastSeries[trendEmaFastSeries.length - 1] || 0);
+  const trendEmaSlowValue = Number(trendEmaSlowSeries[trendEmaSlowSeries.length - 1] || 0);
+  const dailyEmaFastValue = Number(dailyEmaFastSeries[dailyEmaFastSeries.length - 1] || 0);
+  const dailyEmaSlowValue = Number(dailyEmaSlowSeries[dailyEmaSlowSeries.length - 1] || 0);
   const entryRsi = Number(entryRsiSeries[entryRsiSeries.length - 1] || 0);
   const previousEntryRsi = Number(entryRsiSeries[entryRsiSeries.length - 2] || 0);
   const trendRsi = Number(trendRsiSeries[trendRsiSeries.length - 1] || 0);
@@ -99,23 +121,33 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
   const supportLevel = getRecentSupport(entryCandles, 20);
   const resistanceLevel = getMinorResistance(entryCandles, 10);
   const averageVolume = getAverageVolume(entryCandles.slice(0, -1), 20);
-  const supportTouch = Number(lastEntryCandle.low || 0) <= Number(supportLevel || 0) * 1.003;
-  const emaTouch = entryEma20 > 0 && Number(lastEntryCandle.low || 0) <= entryEma20 * 1.0035;
+  const toleranceMultiplier = 1 + (supportResistanceTolerancePercent / 100);
+  const crossoverMultiplier = 1 + (emaCrossoverSensitivityPercent / 100);
+  const supportTouch = Number(lastEntryCandle.low || 0) <= Number(supportLevel || 0) * toleranceMultiplier;
+  const emaTouch = entryEmaFastValue > 0 && Number(lastEntryCandle.low || 0) <= entryEmaFastValue * (1 + ((supportResistanceTolerancePercent * 1.1) / 100));
   const bullishClose = Number(lastEntryCandle.close || 0) > Number(lastEntryCandle.open || 0);
-  const resistanceBreak = resistanceLevel > 0 && Number(lastEntryCandle.close || 0) > resistanceLevel * 1.001;
-  const resetBelowResistance = resistanceLevel > 0 && Number(previousEntryCandle.close || 0) <= resistanceLevel * 1.001;
+  const resistanceBreak = resistanceLevel > 0 && Number(lastEntryCandle.close || 0) > resistanceLevel * (1 + (supportResistanceTolerancePercent / 200));
+  const resetBelowResistance = resistanceLevel > 0 && Number(previousEntryCandle.close || 0) <= resistanceLevel * (1 + (supportResistanceTolerancePercent / 200));
   const volumeConfirmed = Number(lastEntryCandle.volume || 0) >= averageVolume * 1.2;
-  const rsiAligned = entryRsi >= 48 && entryRsi <= 66 && entryRsi > previousEntryRsi;
+  const rsiAligned = entryRsi >= rsiOversold && entryRsi <= rsiOverbought && entryRsi > previousEntryRsi;
+  const emaGapPercent = entryEmaSlowValue > 0
+    ? ((entryEmaFastValue - entryEmaSlowValue) / entryEmaSlowValue) * 100
+    : 0;
+  const trendEmaGapPercent = trendEmaSlowValue > 0
+    ? ((trendEmaFastValue - trendEmaSlowValue) / trendEmaSlowValue) * 100
+    : 0;
   const trendAligned =
-    Number(lastTrendCandle.close || 0) > trendEma200 &&
-    trendEma50 > trendEma200 &&
+    Number(lastTrendCandle.close || 0) > trendEmaSlowValue &&
+    trendEmaFastValue >= trendEmaSlowValue * crossoverMultiplier &&
     trendRsi >= 52 &&
     hasHigherStructure(trendCandles);
   const dailyAligned =
-    Number(lastDailyCandle.close || 0) > dailyEma200 &&
-    dailyEma50 >= dailyEma200 &&
+    Number(lastDailyCandle.close || 0) > dailyEmaSlowValue &&
+    dailyEmaFastValue >= dailyEmaSlowValue * crossoverMultiplier &&
     hasHigherStructure(dailyCandles.slice(-12));
-  const entryAboveEma = Number(lastEntryCandle.close || 0) >= entryEma20 && entryEma20 >= entryEma50;
+  const entryAboveEma =
+    Number(lastEntryCandle.close || 0) >= entryEmaFastValue &&
+    entryEmaFastValue >= entryEmaSlowValue * crossoverMultiplier;
   const strongBody = getBodyStrength(lastEntryCandle) >= 0.5;
   const pullbackConfirmed = supportTouch || emaTouch;
 
@@ -135,10 +167,12 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
   let confidence = 80;
   if (supportTouch && emaTouch) confidence += 4;
   if (Number(lastEntryCandle.volume || 0) >= averageVolume * 1.35) confidence += 5;
-  if (entryRsi >= 52 && entryRsi <= 60) confidence += 4;
-  if (Number(lastEntryCandle.close || 0) > resistanceLevel * 1.003) confidence += 4;
+  if (entryRsi >= Math.max(rsiOversold + 2, 50) && entryRsi <= Math.min(rsiOverbought - 2, 62)) confidence += 4;
+  if (Number(lastEntryCandle.close || 0) > resistanceLevel * (1 + ((supportResistanceTolerancePercent * 0.6) / 100))) confidence += 4;
   if (trendRsi >= 56) confidence += 3;
+  if (emaGapPercent >= emaCrossoverSensitivityPercent) confidence += 3;
   confidence = eligible ? clamp(confidence, 1, 99) : 0;
+  const confidenceScore = clamp(Number(confidence || 0) / 100, 0, 1);
 
   const entryPrice = Number(lastEntryCandle.close || 0);
   const stopLoss = entryPrice * (1 - settings.stopLossPercent / 100);
@@ -155,8 +189,9 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
   if (!resistanceBreak || !resetBelowResistance) failureReasons.push("15m resistance breakout is not confirmed.");
   if (!volumeConfirmed) failureReasons.push("15m volume is too weak for a quality setup.");
   if (!strongBody) failureReasons.push("Breakout candle body is not strong enough.");
+  if (confidenceScore < minimumConfidenceScore) failureReasons.push(`Confidence score ${toFixedNumber(confidenceScore, 4)} is below the quality threshold.`);
 
-  const signal = eligible
+  const signal = eligible && confidenceScore >= minimumConfidenceScore
     ? buildSignal({
         pair,
         strategyType: "QUALITY_ERS",
@@ -172,16 +207,32 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
           trendTimeframe: "1h",
           regimeTimeframe: "1d",
           entryTimeframe: "15m",
+          adaptiveStrategyEnabled: !!strategyParameters.adaptiveStrategyEnabled,
+          adaptiveSource: strategyParameters.adaptiveSource || "static",
+          adaptiveSampleSize: Number(strategyParameters.adaptiveSampleSize || 0),
           supportTouch,
           emaTouch,
+          confidenceScore: toFixedNumber(confidenceScore, 4),
           entryRsi: toFixedNumber(entryRsi, 4),
           trendRsi: toFixedNumber(trendRsi, 4),
-          entryEma20: toFixedNumber(entryEma20),
-          entryEma50: toFixedNumber(entryEma50),
-          trendEma50: toFixedNumber(trendEma50),
-          trendEma200: toFixedNumber(trendEma200),
-          dailyEma50: toFixedNumber(dailyEma50),
-          dailyEma200: toFixedNumber(dailyEma200),
+          entryEmaFast: toFixedNumber(entryEmaFastValue),
+          entryEmaSlow: toFixedNumber(entryEmaSlowValue),
+          trendEmaFast: toFixedNumber(trendEmaFastValue),
+          trendEmaSlow: toFixedNumber(trendEmaSlowValue),
+          dailyEmaFast: toFixedNumber(dailyEmaFastValue),
+          dailyEmaSlow: toFixedNumber(dailyEmaSlowValue),
+          emaFast,
+          emaSlow,
+          rsiOversold,
+          rsiOverbought,
+          supportResistanceTolerancePercent: toFixedNumber(supportResistanceTolerancePercent, 4),
+          emaCrossoverSensitivityPercent: toFixedNumber(emaCrossoverSensitivityPercent, 6),
+          minimumConfidenceScore: toFixedNumber(minimumConfidenceScore, 4),
+          emaGapPercent: toFixedNumber(emaGapPercent, 6),
+          trendEmaGapPercent: toFixedNumber(trendEmaGapPercent, 6),
+          supportDistancePercent: supportLevel > 0
+            ? toFixedNumber((Math.abs(entryPrice - supportLevel) / supportLevel) * 100, 6)
+            : null,
           breakevenTriggerPrice: toFixedNumber(breakevenTriggerPrice),
           activeStopLossPrice: toFixedNumber(stopLoss),
         },
@@ -201,8 +252,10 @@ function evaluateQualityEmaSupportResistanceDetailed(context) {
       currentVolume: toFixedNumber(Number(lastEntryCandle.volume || 0)),
       entryRsi: toFixedNumber(entryRsi, 4),
       trendRsi: toFixedNumber(trendRsi, 4),
+      confidenceScore: toFixedNumber(confidenceScore, 4),
+      emaGapPercent: toFixedNumber(emaGapPercent, 6),
     },
-    failureReasons: eligible ? [] : [...new Set(failureReasons)],
+    failureReasons: signal ? [] : [...new Set(failureReasons)],
   };
 }
 

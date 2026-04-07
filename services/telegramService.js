@@ -3,6 +3,17 @@ const TelegramBot = require("node-telegram-bot-api");
 const { disableBrokenLocalProxyEnv } = require("../lib/network");
 const { defaultPreferences } = require("../models/subscriberModel");
 
+function maskToken(token = "") {
+  const value = String(token || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.length <= 10) {
+    return "***";
+  }
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
 function formatPreferenceLabel(key, enabled) {
   const labels = {
     binance: "Binance alerts",
@@ -23,6 +34,17 @@ class TelegramService {
 
   isEnabled() {
     return !!this.token && !!this.bot;
+  }
+
+  getDiagnostics() {
+    return {
+      tokenLoaded: !!this.token,
+      tokenPreview: maskToken(this.token),
+      started: this.started,
+      polling: !!this.bot,
+      webhook: false,
+      subscriberStoreEnabled: !!this.subscriberModel?.isEnabled?.(),
+    };
   }
 
   buildSettingsKeyboard(preferences = defaultPreferences()) {
@@ -75,7 +97,8 @@ class TelegramService {
 
     this.registerHandlers();
     this.started = true;
-    this.logger.log("Telegram bot service started.");
+    this.logger.log("Telegram bot started");
+    this.logger.log("Telegram bot polling mode active.");
     return this;
   }
 
@@ -101,6 +124,20 @@ class TelegramService {
   }
 
   registerHandlers() {
+    this.bot.on("message", (msg) => {
+      this.logger.log(
+        `Telegram bot incoming update from chat ${msg?.chat?.id || "unknown"}: ${String(msg?.text || "[non-text]").slice(0, 120)}`
+      );
+    });
+
+    this.bot.on("polling_error", (error) => {
+      this.logger.error("Telegram bot polling error:", error.message || error);
+    });
+
+    this.bot.on("webhook_error", (error) => {
+      this.logger.error("Telegram bot webhook error:", error.message || error);
+    });
+
     this.bot.onText(/^\/start$/, async (msg) => {
       const chatId = msg.chat.id;
       try {
