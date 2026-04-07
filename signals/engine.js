@@ -3,6 +3,8 @@ const EventEmitter = require("node:events");
 const { calculateEmaSeries, getAverageVolume, getRollingLevels, toFixedNumber } = require("../indicators/market-indicators");
 const { getCandles: getBinanceCandles } = require("../lib/binance");
 const { getCandles: getBybitCandles } = require("../lib/bybit");
+const { DEFAULT_QUALITY_EMA_SETTINGS, normalizeQualityEmaSettings } = require("../strategies/quality-ema-config");
+const { evaluateQualityEmaSupportResistanceDetailed } = require("../strategies/quality-ema-support-resistance");
 const { DEFAULT_SHORT_SWING_SETTINGS, normalizeShortSwingSettings } = require("../strategies/short-swing-config");
 const { evaluateShortSwingSpotDetailed } = require("../strategies/short-swing-spot");
 const {
@@ -21,6 +23,7 @@ const { SignalStore } = require("./store");
 const { BinanceSignalStream } = require("../websocket/binance-signal-stream");
 
 const STRATEGY_PRIORITY = {
+  QUALITY_ERS: 6,
   SWING_SPOT: 5,
   BREAKOUT: 4,
   SUPPORT: 3,
@@ -66,7 +69,10 @@ class SignalEngine extends EventEmitter {
     this.started = false;
     this.marketContextCache = new Map();
     this.marketContextInflight = new Map();
-    this.strategySettings = normalizeShortSwingSettings(DEFAULT_SHORT_SWING_SETTINGS, DEFAULT_SHORT_SWING_SETTINGS);
+    this.strategySettings = {
+      shortSwing: normalizeShortSwingSettings(DEFAULT_SHORT_SWING_SETTINGS, DEFAULT_SHORT_SWING_SETTINGS),
+      qualityEma: normalizeQualityEmaSettings(DEFAULT_QUALITY_EMA_SETTINGS, DEFAULT_QUALITY_EMA_SETTINGS),
+    };
     this.boundOnKline = (payload) => {
       void this.handleKline(payload);
     };
@@ -135,11 +141,17 @@ class SignalEngine extends EventEmitter {
   }
 
   getStrategySettings() {
-    return { ...this.strategySettings };
+    return {
+      shortSwing: { ...(this.strategySettings.shortSwing || {}) },
+      qualityEma: { ...(this.strategySettings.qualityEma || {}) },
+    };
   }
 
   setStrategySettings(settings = {}) {
-    this.strategySettings = normalizeShortSwingSettings(settings, DEFAULT_SHORT_SWING_SETTINGS);
+    this.strategySettings = {
+      shortSwing: normalizeShortSwingSettings(settings.shortSwing, this.strategySettings.shortSwing || DEFAULT_SHORT_SWING_SETTINGS),
+      qualityEma: normalizeQualityEmaSettings(settings.qualityEma, this.strategySettings.qualityEma || DEFAULT_QUALITY_EMA_SETTINGS),
+    };
     this.emit("snapshot", this.getSnapshot());
     return this.getStrategySettings();
   }
@@ -365,22 +377,52 @@ class SignalEngine extends EventEmitter {
     const lastCandle = candles[candles.length - 1];
     const timestamp = Number(lastCandle.closeTime || lastCandle.openTime || Date.now());
     const btcPairState = this.store.getPairState("BTCUSDT");
-    const [trendCandles, relativeStrengthCandles, btcRelativeStrengthCandles] = await Promise.all([
+    const [trendCandles, dailyCandles, relativeStrengthCandles, btcRelativeStrengthCandles] = await Promise.all([
       this.getMarketCandles(pairState.pair, "1h", 260),
+      this.getMarketCandles(pairState.pair, "1d", 260),
       this.getMarketCandles(pairState.pair, "4h", 12),
       this.getMarketCandles("BTCUSDT", "4h", 12),
     ]);
 
-    const evaluation = evaluateShortSwingSpotDetailed({
+    const evaluations = [
+      evaluateQualityEmaSupportResistanceDetailed({
+        pair: pairState.pair,
+        entryCandles: candles,
+        trendCandles,
+        dailyCandles,
+        timestamp,
+        settings: this.strategySettings.qualityEma,
+      }),
+      evaluateShortSwingSpotDetailed({
+        pair: pairState.pair,
+        entryCandles: candles,
+        trendCandles,
+        btcEntryCandles: btcPairState?.candles || [],
+        relativeStrengthCandles,
+        btcRelativeStrengthCandles,
+        timestamp,
+        settings: this.strategySettings.shortSwing,
+      }),
+    ];
+
+    const evaluation = evaluations
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (!!a.signal !== !!b.signal) {
+          return a.signal ? -1 : 1;
+        }
+        const confidenceDiff = Number(b.confidence || b.signal?.confidence || 0) - Number(a.confidence || a.signal?.confidence || 0);
+        if (confidenceDiff !== 0) {
+          return confidenceDiff;
+        }
+        return (STRATEGY_PRIORITY[b.signal?.strategyType || ""] || 0) - (STRATEGY_PRIORITY[a.signal?.strategyType || ""] || 0);
+      })[0] || {
       pair: pairState.pair,
-      entryCandles: candles,
-      trendCandles,
-      btcEntryCandles: btcPairState?.candles || [],
-      relativeStrengthCandles,
-      btcRelativeStrengthCandles,
-      timestamp,
-      settings: this.strategySettings,
-    });
+      eligible: false,
+      signal: null,
+      confidence: 0,
+      failureReasons: ["No strategy evaluation is available for this pair."],
+    };
 
     const canEmit = this.store.canEmit(pairState.pair, timestamp);
     const confidence = Number(evaluation?.signal?.confidence || evaluation?.confidence || 0);

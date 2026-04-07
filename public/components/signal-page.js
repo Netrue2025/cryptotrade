@@ -5,6 +5,7 @@
     EMA_RSI: { label: "EMA-RSI", className: "ema-rsi" },
     BREAKOUT: { label: "Breakout", className: "breakout" },
     SWING_SPOT: { label: "Swing Spot", className: "breakout" },
+    QUALITY_ERS: { label: "Quality EMA", className: "ema-rsi" },
   };
 
   let activeChart = null;

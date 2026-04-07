@@ -50,6 +50,19 @@ function getDefaultShortSwingSettingsDraft() {
   };
 }
 
+function getDefaultQualityEmaSettingsDraft() {
+  return {
+    enabled: false,
+    autoTradeEnabled: false,
+    positionSizePercent: 5,
+    takeProfitPercent: 1.5,
+    stopLossPercent: 0.7,
+    breakevenTriggerPercent: 0.8,
+    maxSimultaneousTrades: 2,
+    maxTradesPerPairPerDay: 1,
+  };
+}
+
 const state = {
   user: null,
   theme: localStorage.getItem("tradeflow-theme") || "light",
@@ -108,6 +121,7 @@ const state = {
     testnet: "false",
   },
   shortSwingSettingsDraft: getDefaultShortSwingSettingsDraft(),
+  qualityEmaSettingsDraft: getDefaultQualityEmaSettingsDraft(),
   shortSwingDebug: {
     generatedAt: "",
     settings: getDefaultShortSwingSettingsDraft(),
@@ -117,7 +131,9 @@ const state = {
   },
   loadingStrategyDebug: false,
   loadingStrategySettings: false,
+  loadingQualityStrategySettings: false,
   savingStrategySettings: false,
+  savingQualityStrategySettings: false,
   socket: null,
   socketRetry: null,
   socketRefreshTimer: null,
@@ -2287,6 +2303,25 @@ async function loadShortSwingSettings() {
   }
 }
 
+async function loadQualityEmaSettings() {
+  if (!state.user || state.user.role !== "admin") {
+    state.qualityEmaSettingsDraft = getDefaultQualityEmaSettingsDraft();
+    return;
+  }
+
+  state.loadingQualityStrategySettings = true;
+  render();
+  try {
+    const payload = await api("/api/strategy/quality-ema/settings");
+    state.qualityEmaSettingsDraft = {
+      ...getDefaultQualityEmaSettingsDraft(),
+      ...(payload.settings || {}),
+    };
+  } finally {
+    state.loadingQualityStrategySettings = false;
+  }
+}
+
 async function loadShortSwingDebug() {
   if (!state.user || state.user.role !== "admin") {
     state.shortSwingDebug = {
@@ -2350,11 +2385,9 @@ async function loadDashboardData() {
   const shortSwingSettingsPromise = loadShortSwingSettings().then(() => {
     render();
   });
-  const shortSwingDebugPromise = loadShortSwingDebug().catch(() => {
-    state.loadingStrategyDebug = false;
-    refreshSignalPaneDom();
+  const qualityEmaSettingsPromise = loadQualityEmaSettings().then(() => {
+    render();
   });
-
   const watchlistPromise = refreshWatchlistFeed()
     .then(() => {
       connectWatchSocket();
@@ -2418,7 +2451,7 @@ async function loadDashboardData() {
   void accountPromise;
   void settingsPromise;
   void shortSwingSettingsPromise;
-  void shortSwingDebugPromise;
+  void qualityEmaSettingsPromise;
   void watchlistPromise;
 }
 
@@ -2622,6 +2655,7 @@ function renderSummaryCard() {
               <span class="hero-chip ${todayPositive ? "positive" : "negative"}">Today's return ${todayPositive ? "+" : "-"}${formatUsdt(Math.abs(state.todayPnlValue || 0))} ${state.todayPnlPercent >= 0 ? "+" : ""}${formatNumber(state.todayPnlPercent, 2)}%</span>
               <span class="hero-chip ${monthPositive ? "positive" : "negative"}">${formatMonthLabel(state.monthLabel)} return ${monthPositive ? "+" : "-"}${formatUsdt(Math.abs(state.monthPnlValue || 0))} ${state.monthPnlPercent >= 0 ? "+" : ""}${formatNumber(state.monthPnlPercent, 2)}%</span>
             </div>
+            
           </div>
           <div class="hero-chip-row">
             ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
@@ -3364,6 +3398,50 @@ function renderShortSwingSettingsSection() {
   `;
 }
 
+function renderQualityEmaSettingsSection() {
+  if (state.user?.role !== "admin") {
+    return "";
+  }
+
+  const draft = state.qualityEmaSettingsDraft || getDefaultQualityEmaSettingsDraft();
+  return `
+    <section class="mobile-card${loadingClass(state.loadingQualityStrategySettings)}">
+      ${state.loadingQualityStrategySettings ? renderSectionLoadingOverlay("Loading strategy", "Fetching EMA-RSI controls") : ""}
+      <div class="section-head">
+        <div>
+          <h3>Quality EMA-RSI Strategy</h3>
+          <p class="muted-copy">Manage the higher-quality EMA, RSI, support, and resistance strategy from the dashboard. It stays disabled until you enable and save it here.</p>
+        </div>
+      </div>
+      <form id="quality-ema-settings-form" class="stack-form subtle-form">
+        <label>
+          Strategy enabled
+          <select name="enabled">
+            <option value="false" ${!draft.enabled ? "selected" : ""}>Disabled</option>
+            <option value="true" ${draft.enabled ? "selected" : ""}>Enabled</option>
+          </select>
+        </label>
+        <label>
+          Auto trade
+          <select name="autoTradeEnabled">
+            <option value="false" ${!draft.autoTradeEnabled ? "selected" : ""}>Disabled</option>
+            <option value="true" ${draft.autoTradeEnabled ? "selected" : ""}>Enabled</option>
+          </select>
+        </label>
+        <label>Position size % <input name="positionSizePercent" type="number" min="0.1" max="100" step="0.1" value="${escapeHtml(draft.positionSizePercent)}" /></label>
+        <label>Take profit % <input name="takeProfitPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.takeProfitPercent)}" /></label>
+        <label>Stop loss % <input name="stopLossPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.stopLossPercent)}" /></label>
+        <label>Breakeven trigger % <input name="breakevenTriggerPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.breakevenTriggerPercent)}" /></label>
+        <label>Max simultaneous trades <input name="maxSimultaneousTrades" type="number" min="1" step="1" value="${escapeHtml(draft.maxSimultaneousTrades)}" /></label>
+        <label>Max trades per pair per day <input name="maxTradesPerPairPerDay" type="number" min="1" step="1" value="${escapeHtml(draft.maxTradesPerPairPerDay)}" /></label>
+        <button class="button-primary shimmer-button" type="submit" ${state.savingQualityStrategySettings ? "disabled" : ""}>
+          ${state.savingQualityStrategySettings ? "Saving..." : "Save EMA-RSI strategy"}
+        </button>
+      </form>
+    </section>
+  `;
+}
+
 function renderShortSwingDebugPane() {
   if (state.user?.role !== "admin") {
     return "";
@@ -3528,6 +3606,7 @@ function renderSettingsPane() {
         }
       </section>
       ${renderShortSwingSettingsSection()}
+      ${renderQualityEmaSettingsSection()}
       <section class="mobile-card">
         <div class="section-head">
           <div>
@@ -3570,7 +3649,6 @@ function renderSignalsPane() {
           formatUsdtUnit,
         })}
       </div>
-      ${renderShortSwingDebugPane()}
     `
     : `<section class="mobile-card"><p class="muted-copy">Signal dashboard is loading...</p></section>`;
 }
@@ -3729,11 +3807,9 @@ function renderDashboardShell() {
       }
       state.activeTab = nextTab;
       render();
-      if (nextTab === "signals" && state.user?.role === "admin") {
-        void loadShortSwingDebug().catch(() => {});
-      }
       if (nextTab === "settings" && state.user?.role === "admin") {
         void loadShortSwingSettings().then(() => render()).catch(() => {});
+        void loadQualityEmaSettings().then(() => render()).catch(() => {});
       }
     });
   });
@@ -3744,6 +3820,7 @@ function bindDashboardActions() {
   bindAdminUserDisclosureToggles();
   bindSignalFeedActions();
   bindShortSwingSettingsActions();
+  bindQualityEmaSettingsActions();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -3931,6 +4008,7 @@ function bindDashboardActions() {
         testnet: "false",
       };
       state.shortSwingSettingsDraft = getDefaultShortSwingSettingsDraft();
+      state.qualityEmaSettingsDraft = getDefaultQualityEmaSettingsDraft();
       state.shortSwingDebug = {
         generatedAt: "",
         settings: getDefaultShortSwingSettingsDraft(),
@@ -3940,7 +4018,9 @@ function bindDashboardActions() {
       };
       state.loadingStrategyDebug = false;
       state.loadingStrategySettings = false;
+      state.loadingQualityStrategySettings = false;
       state.savingStrategySettings = false;
+      state.savingQualityStrategySettings = false;
       state.signalFeed = {
         pairs: [],
         timeframe: "15m",
@@ -4102,6 +4182,61 @@ function bindShortSwingSettingsActions() {
       showError(error.message);
     } finally {
       state.savingStrategySettings = false;
+      render();
+    }
+  });
+}
+
+function bindQualityEmaSettingsActions() {
+  const form = document.getElementById("quality-ema-settings-form");
+  if (!form) {
+    return;
+  }
+
+  form.querySelectorAll("input, select").forEach((field) => {
+    field.addEventListener("input", () => {
+      state.qualityEmaSettingsDraft = {
+        ...state.qualityEmaSettingsDraft,
+        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
+      };
+    });
+    field.addEventListener("change", () => {
+      state.qualityEmaSettingsDraft = {
+        ...state.qualityEmaSettingsDraft,
+        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
+      };
+    });
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    state.savingQualityStrategySettings = true;
+    render();
+    try {
+      const data = Object.fromEntries(new FormData(form).entries());
+      const payload = {
+        enabled: data.enabled === "true",
+        autoTradeEnabled: data.autoTradeEnabled === "true",
+        positionSizePercent: Number(data.positionSizePercent || 0),
+        takeProfitPercent: Number(data.takeProfitPercent || 0),
+        stopLossPercent: Number(data.stopLossPercent || 0),
+        breakevenTriggerPercent: Number(data.breakevenTriggerPercent || 0),
+        maxSimultaneousTrades: Number(data.maxSimultaneousTrades || 0),
+        maxTradesPerPairPerDay: Number(data.maxTradesPerPairPerDay || 0),
+      };
+      const result = await api("/api/strategy/quality-ema/settings", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      state.qualityEmaSettingsDraft = {
+        ...getDefaultQualityEmaSettingsDraft(),
+        ...(result.settings || {}),
+      };
+      showNotice("Quality EMA-RSI strategy settings saved");
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      state.savingQualityStrategySettings = false;
       render();
     }
   });

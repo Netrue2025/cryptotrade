@@ -11,6 +11,7 @@ function getStrategyEmoji(type) {
     EMA_RSI: "🟪",
     BREAKOUT: "🟩",
     SWING_SPOT: "🟨",
+    QUALITY_ERS: "🟥",
   };
   return map[value] || "🟦";
 }
@@ -23,6 +24,7 @@ function getStrategyLabel(type) {
     EMA_RSI: "EMA-RSI",
     BREAKOUT: "BREAKOUT",
     SWING_SPOT: "SWING-SPOT",
+    QUALITY_ERS: "QUALITY-EMA",
   };
   return map[value] || value || "SUPPORT";
 }

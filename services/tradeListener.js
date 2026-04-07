@@ -91,6 +91,14 @@ function isShortSwingTrade(trade) {
   return String(trade?.strategyContext?.type || "").trim().toUpperCase() === "SHORT_SWING_SPOT";
 }
 
+function isQualityEmaTrade(trade) {
+  return String(trade?.strategyContext?.type || "").trim().toUpperCase() === "QUALITY_EMA_SUPPORT_RESISTANCE";
+}
+
+function isManagedStrategyTrade(trade) {
+  return isShortSwingTrade(trade) || isQualityEmaTrade(trade);
+}
+
 function getStrategyReason(trade, exitOrder = null) {
   return (
     String(exitOrder?.reason || "").trim()
@@ -324,7 +332,7 @@ class TradeListener {
     }
 
     const exchange = normalizeExchange(trade.exchange);
-    if (isShortSwingTrade(trade)) {
+    if (isManagedStrategyTrade(trade)) {
       if (getExecutionStatus(trade.adminExecution) === "FILLED") {
         await this.broadcast(buildShortSwingExecutedMessage(trade), exchange, { exchange });
       }
@@ -362,7 +370,7 @@ class TradeListener {
     const previousEntryStatus = getExecutionStatus(previousTrade?.adminExecution);
     const nextEntryStatus = getExecutionStatus(nextTrade.adminExecution);
     if (previousEntryStatus !== "FILLED" && nextEntryStatus === "FILLED") {
-      if (isShortSwingTrade(nextTrade)) {
+      if (isManagedStrategyTrade(nextTrade)) {
         await this.broadcast(buildShortSwingExecutedMessage(nextTrade), exchange, { exchange });
       } else {
       await this.broadcast(buildOrderFilledMessage({ exchange, trade: nextTrade }), exchange, { exchange });
@@ -383,7 +391,7 @@ class TradeListener {
   async handleFilledExit(trade, exitOrder, exchange) {
     const profitPercent = calculateProfitPercent(trade, exitOrder);
 
-    if (isShortSwingTrade(trade)) {
+    if (isManagedStrategyTrade(trade)) {
       if (exitOrder.kind === "TAKE_PROFIT") {
         await this.broadcast(buildShortSwingTakeProfitMessage(trade, exitOrder), exchange, { exchange });
       } else if (exitOrder.kind === "STOP_LOSS" || exitOrder.kind === "BREAKEVEN_STOP") {
