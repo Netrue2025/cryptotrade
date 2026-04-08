@@ -392,6 +392,7 @@ class SignalEngine extends EventEmitter {
       ? await this.tradeLearningService.getAdaptiveParameters({
           strategyType: "QUALITY_ERS",
           defaults: getQualityEmaStrategyParameters(this.strategySettings.qualityEma),
+          enabled: this.strategySettings.qualityEma?.useAdaptiveStrategy,
         }).catch(() => getQualityEmaStrategyParameters(this.strategySettings.qualityEma))
       : getQualityEmaStrategyParameters(this.strategySettings.qualityEma);
 

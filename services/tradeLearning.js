@@ -273,16 +273,20 @@ class TradeLearningService {
     return analysis;
   }
 
-  async getAdaptiveParameters({ strategyType = "QUALITY_ERS", defaults = {} } = {}) {
+  async getAdaptiveParameters({ strategyType = "QUALITY_ERS", defaults = {}, enabled } = {}) {
     const baseParameters = {
       ...defaults,
     };
 
-    if (!parseBoolean(process.env.USE_ADAPTIVE_STRATEGY, false)) {
+    const adaptiveEnabled = enabled === undefined
+      ? parseBoolean(process.env.USE_ADAPTIVE_STRATEGY, false)
+      : !!enabled;
+
+    if (!adaptiveEnabled) {
       return {
         ...baseParameters,
         adaptiveStrategyEnabled: false,
-        adaptiveSource: "disabled",
+        adaptiveSource: enabled === undefined ? "disabled" : "settings_disabled",
       };
     }
 

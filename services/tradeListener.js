@@ -250,15 +250,15 @@ class TradeListener {
   }
 
   async start() {
-    if (this.started) {
-      return this;
-    }
-
     if (this.telegramService?.start) {
       await this.telegramService.start();
       if (this.telegramService?.getDiagnostics) {
         this.logger.log(`Telegram trade bot diagnostics: ${JSON.stringify(this.telegramService.getDiagnostics())}`);
       }
+    }
+
+    if (this.started) {
+      return this;
     }
 
     if (!this.resetTask) {

@@ -23,6 +23,20 @@ function formatPreferenceLabel(key, enabled) {
   return `${enabled ? "✅" : "⬜"} ${labels[key] || key}`;
 }
 
+function withTimeout(promise, label, timeoutMs = 6000) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 class TelegramService {
   constructor({ token = process.env.TELEGRAM_TRADE_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN, subscriberModel, logger = console } = {}) {
     this.token = String(token || "").trim();
@@ -30,10 +44,20 @@ class TelegramService {
     this.logger = logger;
     this.bot = null;
     this.started = false;
+    this.pollingRestartTimer = null;
+    this.lastPollingError = null;
   }
 
   isEnabled() {
-    return !!this.token && !!this.bot;
+    return !!this.token && !!this.bot && this.started;
+  }
+
+  isHealthy() {
+    if (!this.isEnabled()) {
+      return false;
+    }
+
+    return typeof this.bot.isPolling === "function" ? this.bot.isPolling() : true;
   }
 
   getDiagnostics() {
@@ -42,8 +66,10 @@ class TelegramService {
       tokenPreview: maskToken(this.token),
       started: this.started,
       polling: !!this.bot,
+      pollingActive: this.isHealthy(),
       webhook: false,
       subscriberStoreEnabled: !!this.subscriberModel?.isEnabled?.(),
+      lastPollingError: this.lastPollingError,
     };
   }
 
@@ -73,43 +99,87 @@ class TelegramService {
   }
 
   async start() {
-    if (this.started || !this.token) {
-      if (!this.token) {
-        this.logger.warn("Telegram bot service disabled: TELEGRAM_TRADE_BOT_TOKEN or TELEGRAM_BOT_TOKEN is missing.");
-      }
+    if (!this.token) {
+      this.started = false;
+      this.bot = null;
+      this.logger.warn("Telegram bot service disabled: TELEGRAM_TRADE_BOT_TOKEN or TELEGRAM_BOT_TOKEN is missing.");
       return this;
     }
 
     disableBrokenLocalProxyEnv(this.logger, "Telegram trade bot");
 
-    if (this.subscriberModel?.init) {
-      await this.subscriberModel.init();
+    if (!this.bot) {
+      if (this.subscriberModel?.init) {
+        await this.subscriberModel.init();
+      }
+
+      this.bot = new TelegramBot(this.token, {
+        polling: false,
+      });
+
+      this.registerHandlers();
+      this.logger.log("Telegram bot started");
     }
 
-    this.bot = new TelegramBot(this.token, {
-      polling: {
-        autoStart: true,
-        params: {
-          timeout: 20,
-        },
-      },
-    });
-
-    this.registerHandlers();
+    await this.ensurePolling();
     this.started = true;
-    this.logger.log("Telegram bot started");
-    this.logger.log("Telegram bot polling mode active.");
     return this;
   }
 
   async stop() {
+    clearTimeout(this.pollingRestartTimer);
+    this.pollingRestartTimer = null;
     if (!this.bot) {
+      this.started = false;
       return;
     }
 
     await this.bot.stopPolling().catch(() => {});
     this.bot = null;
     this.started = false;
+  }
+
+  async ensurePolling() {
+    if (!this.bot) {
+      throw new Error("Telegram bot is not initialized.");
+    }
+
+    if (typeof this.bot.isPolling === "function" && this.bot.isPolling()) {
+      return;
+    }
+
+    await this.bot.deleteWebHook({ drop_pending_updates: false }).catch((error) => {
+      this.logger.warn("Telegram bot webhook cleanup failed:", error.message || error);
+    });
+
+    await this.bot.startPolling({
+      restart: true,
+    });
+
+    this.lastPollingError = null;
+    this.logger.log("Telegram bot polling mode active.");
+  }
+
+  schedulePollingRestart(reason, error = null) {
+    if (error) {
+      this.lastPollingError = {
+        message: error.message || String(error),
+        at: new Date().toISOString(),
+        reason,
+      };
+    }
+
+    if (this.pollingRestartTimer || !this.bot) {
+      return;
+    }
+
+    this.pollingRestartTimer = setTimeout(() => {
+      this.pollingRestartTimer = null;
+      void this.ensurePolling().catch((restartError) => {
+        this.logger.error("Telegram bot polling restart failed:", restartError.message || restartError);
+        this.schedulePollingRestart("restart_failed", restartError);
+      });
+    }, 5000);
   }
 
   async sendMessage(chatId, text, options = {}) {
@@ -123,6 +193,41 @@ class TelegramService {
     });
   }
 
+  async getSubscriberWithFallback(chatId, contextLabel) {
+    const fallbackSubscriber = {
+      chatId,
+      subscribed: true,
+      preferences: defaultPreferences(),
+    };
+
+    try {
+      const subscriber = await withTimeout(
+        this.subscriberModel.subscribe(chatId),
+        `${contextLabel} subscriber sync`
+      );
+      return {
+        subscriber: subscriber || fallbackSubscriber,
+        degraded: false,
+      };
+    } catch (error) {
+      this.logger.error(`${contextLabel} subscriber sync failed:`, error.message || error);
+      const existingSubscriber = await withTimeout(
+        this.subscriberModel.findByChatId(chatId),
+        `${contextLabel} subscriber fallback lookup`,
+        2500
+      ).catch((fallbackError) => {
+        this.logger.error(`${contextLabel} subscriber fallback lookup failed:`, fallbackError.message || fallbackError);
+        return null;
+      });
+
+      return {
+        subscriber: existingSubscriber || fallbackSubscriber,
+        degraded: true,
+        error,
+      };
+    }
+  }
+
   registerHandlers() {
     this.bot.on("message", (msg) => {
       this.logger.log(
@@ -132,19 +237,23 @@ class TelegramService {
 
     this.bot.on("polling_error", (error) => {
       this.logger.error("Telegram bot polling error:", error.message || error);
+      this.schedulePollingRestart("polling_error", error);
     });
 
     this.bot.on("webhook_error", (error) => {
       this.logger.error("Telegram bot webhook error:", error.message || error);
+      this.schedulePollingRestart("webhook_error", error);
     });
 
     this.bot.onText(/^\/start$/, async (msg) => {
       const chatId = msg.chat.id;
       try {
-        await this.subscriberModel.subscribe(chatId);
+        const { degraded } = await this.getSubscriberWithFallback(chatId, "Telegram /start");
         await this.sendMessage(
           chatId,
-          "You are now subscribed to trade alerts.\n\nUse /settings to choose Binance, Bybit, and daily profit notifications.\nUse /stop any time to unsubscribe."
+          degraded
+            ? "The bot is online, but subscriber storage is responding slowly right now.\n\nYour alert preferences may not save yet. Use /settings again in a moment if the buttons do not reflect your choices."
+            : "You are now subscribed to trade alerts.\n\nUse /settings to choose Binance, Bybit, and daily profit notifications.\nUse /stop any time to unsubscribe."
         );
       } catch (error) {
         this.logger.error("Telegram /start failed:", error.message || error);
@@ -166,10 +275,16 @@ class TelegramService {
     this.bot.onText(/^\/settings$/, async (msg) => {
       const chatId = msg.chat.id;
       try {
-        const subscriber = await this.subscriberModel.subscribe(chatId);
-        await this.sendMessage(chatId, "Choose which alerts you want to receive:", {
-          reply_markup: this.buildSettingsKeyboard(subscriber?.preferences),
-        });
+        const { subscriber, degraded } = await this.getSubscriberWithFallback(chatId, "Telegram /settings");
+        await this.sendMessage(
+          chatId,
+          degraded
+            ? "Choose which alerts you want to receive.\n\nStorage is reconnecting, so button changes may take a moment to persist."
+            : "Choose which alerts you want to receive:",
+          {
+            reply_markup: this.buildSettingsKeyboard(subscriber?.preferences),
+          }
+        );
       } catch (error) {
         this.logger.error("Telegram /settings failed:", error.message || error);
         await this.sendMessage(chatId, "I could not load your settings right now. Please try again in a moment.").catch(() => {});
@@ -186,7 +301,10 @@ class TelegramService {
 
       const preferenceKey = data.replace("telegram-pref:", "").trim();
       try {
-        const subscriber = await this.subscriberModel.togglePreference(chatId, preferenceKey);
+        const subscriber = await withTimeout(
+          this.subscriberModel.togglePreference(chatId, preferenceKey),
+          "Telegram preference toggle"
+        );
         await this.bot.editMessageReplyMarkup(this.buildSettingsKeyboard(subscriber?.preferences), {
           chat_id: chatId,
           message_id: messageId,

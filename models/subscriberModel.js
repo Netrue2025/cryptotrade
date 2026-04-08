@@ -2,6 +2,7 @@ const { MongoClient } = require("mongodb");
 const { getMongoCollectionByName } = require("../lib/db");
 
 const DEFAULT_COLLECTION_NAME = "telegram_subscribers";
+const DEFAULT_OPERATION_TIMEOUT_MS = 8000;
 
 function getMongoUri() {
   return String(process.env.MONGO_URI || process.env.MONGODB_URI || "").trim();
@@ -43,6 +44,20 @@ function sanitizeChatId(chatId) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function withTimeout(promise, label, timeoutMs = DEFAULT_OPERATION_TIMEOUT_MS) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 class SubscriberModel {
   constructor({ mongoUri, dbName, collectionName, logger = console } = {}) {
     this.mongoUri = mongoUri || getMongoUri();
@@ -59,6 +74,11 @@ class SubscriberModel {
 
   shouldUseSharedAppMongo() {
     return !!this.mongoUri && this.mongoUri === getAppMongoUri();
+  }
+
+  resetConnectionState() {
+    this.clientPromise = null;
+    this.collectionPromise = null;
   }
 
   async getCollection() {
@@ -80,7 +100,10 @@ class SubscriberModel {
         }
         const client = await this.clientPromise;
         return client.db(this.dbName).collection(this.collectionName);
-      })();
+      })().catch((error) => {
+        this.resetConnectionState();
+        throw error;
+      });
     }
 
     return this.collectionPromise;
@@ -91,7 +114,7 @@ class SubscriberModel {
       return;
     }
 
-    const collection = await this.getCollection();
+    const collection = await withTimeout(this.getCollection(), "Telegram subscriber store initialization");
     await collection.createIndex({ chatId: 1 }, { unique: true, name: "chatId_unique" });
     await collection.createIndex({ subscribed: 1 }, { name: "subscribed_idx" });
   }
@@ -111,7 +134,7 @@ class SubscriberModel {
       return null;
     }
 
-    const collection = await this.getCollection();
+    const collection = await withTimeout(this.getCollection(), "Telegram subscriber lookup");
     return collection.findOne({ chatId: normalizedChatId });
   }
 
@@ -125,7 +148,7 @@ class SubscriberModel {
       throw new Error("A valid Telegram chat id is required.");
     }
 
-    const collection = await this.getCollection();
+    const collection = await withTimeout(this.getCollection(), "Telegram subscriber subscribe");
     await collection.updateOne(
       { chatId: normalizedChatId },
       {
@@ -155,7 +178,7 @@ class SubscriberModel {
       return null;
     }
 
-    const collection = await this.getCollection();
+    const collection = await withTimeout(this.getCollection(), "Telegram subscriber unsubscribe");
     await collection.updateOne(
       { chatId: normalizedChatId },
       {
@@ -193,7 +216,7 @@ class SubscriberModel {
       ),
     };
 
-    const collection = await this.getCollection();
+    const collection = await withTimeout(this.getCollection(), "Telegram subscriber preferences update");
     await collection.updateOne(
       { chatId: normalizedChatId },
       {
@@ -236,7 +259,7 @@ class SubscriberModel {
       return [];
     }
 
-    const collection = await this.getCollection();
+    const collection = await withTimeout(this.getCollection(), "Telegram subscriber list");
     return collection
       .find({ subscribed: true })
       .sort({ createdAt: 1 })

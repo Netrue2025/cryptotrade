@@ -6,12 +6,13 @@ const { getCandles: getBybitCandles } = require("../lib/bybit");
 
 function normalizeKlinePayload(payload) {
   const kline = payload?.data?.k || payload?.k || null;
-  if (!kline?.s) {
+  const symbol = payload?.data?.s || payload?.s || kline?.s || "";
+  if (!symbol) {
     return null;
   }
 
   return {
-    pair: String(kline.s || "").toUpperCase(),
+    pair: String(symbol || "").toUpperCase(),
     candle: {
       openTime: Number(kline.t || 0),
       closeTime: Number(kline.T || 0),

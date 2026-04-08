@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
+const { WebSocketServer } = require("ws");
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -74,6 +75,8 @@ const ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 1000 * 60;
 const TRADE_RECONCILE_BACKGROUND_INTERVAL_MS = 15_000;
 const SERVICE_RETRY_INTERVAL_MS = 60_000;
 const MAX_STRATEGY_LOG_HISTORY = 1000;
+const SETTINGS_USERS_WS_REFRESH_MS = 20_000;
+const SETTINGS_USERS_WS_PATH = "/ws/settings-users";
 
 let db = null;
 const tradeLearningService = new TradeLearningService();
@@ -115,6 +118,7 @@ const watchlistCache = new Map();
 let signalEngineStartPromise = null;
 let tradeListenerStartPromise = null;
 let shortSwingSignalQueue = Promise.resolve();
+let qualityEmaSignalQueue = Promise.resolve();
 
 function getShortSwingSettings() {
   return normalizeShortSwingSettings(db?.meta?.shortSwingSettings, DEFAULT_SHORT_SWING_SETTINGS);
@@ -154,20 +158,27 @@ function setQualityEmaSettings(settings = {}) {
 
 async function broadcastSignalAlert(signal) {
   const message = buildTelegramMessage(signal);
+  let subscriberResult = { sent: 0, skipped: 0, failed: 0, disabled: true };
 
   if (telegramTradeService?.isEnabled?.() && subscriberModel?.isEnabled?.()) {
-    const result = await signalBroadcaster.broadcast(message, "signal", {
-      telegramOptions: {
-        parse_mode: "Markdown",
-        disable_web_page_preview: false,
-      },
-    });
-    if (!result.disabled && result.sent > 0) {
-      return result;
+    try {
+      subscriberResult = await signalBroadcaster.broadcast(message, "signal", {
+        telegramOptions: {
+          parse_mode: "Markdown",
+          disable_web_page_preview: false,
+        },
+      });
+    } catch (error) {
+      console.error(`Subscriber signal broadcast failed for ${signal?.pair || "unknown pair"}:`, error.message || error);
     }
   }
 
-  return sendTelegramAlert(signal);
+  const signalBotResult = await sendTelegramAlert(signal);
+  return {
+    ok: !!signalBotResult?.ok || subscriberResult.sent > 0,
+    signalBot: signalBotResult,
+    subscribers: subscriberResult,
+  };
 }
 
 function persist() {
@@ -227,7 +238,7 @@ async function ensureSignalEngineRunning(force = false) {
 }
 
 async function ensureTradeListenerRunning(force = false) {
-  if (tradeListener.started && !force) {
+  if (tradeListener.started && !force && (!telegramTradeService?.isHealthy || telegramTradeService.isHealthy())) {
     return true;
   }
 
@@ -976,6 +987,91 @@ async function getConnectedWalletDetails(user, usdtNgnRate) {
       };
     })
   ).then((items) => items.filter(Boolean));
+}
+
+async function getConnectedWalletDetailsLive(user, usdtNgnRate) {
+  const connectedExchanges = listExchanges().filter((exchange) => !!getExchangeAccount(user, exchange.id));
+
+  return Promise.all(
+    connectedExchanges.map(async (exchange) => {
+      const account = getExchangeAccount(user, exchange.id);
+      if (!account) {
+        return null;
+      }
+
+      const liveSnapshot = await getAccountSnapshot(account, exchange.id).catch(() => null);
+      const liveSummary = summarizeWalletDetailsFromSnapshot(liveSnapshot, exchange.id, exchange.label, usdtNgnRate);
+      if (liveSummary) {
+        return liveSummary;
+      }
+
+      const cachedSnapshot = getCachedAccountSnapshot(account, exchange.id);
+      const cachedSummary = summarizeWalletDetailsFromSnapshot(cachedSnapshot, exchange.id, exchange.label, usdtNgnRate);
+      if (cachedSummary) {
+        return {
+          ...cachedSummary,
+          stale: true,
+        };
+      }
+
+      return {
+        exchange: exchange.id,
+        label: exchange.label,
+        connected: true,
+        lastValidatedAt: account.lastValidatedAt || null,
+        error: "Live wallet sync is still loading.",
+        totalUsdt: 0,
+        totalNgn: 0,
+        assetCount: 0,
+        topAssets: [],
+        stale: true,
+      };
+    })
+  ).then((items) => items.filter(Boolean));
+}
+
+async function buildManagedUserSummary(user, usdtNgnRate, { refreshWallets = false } = {}) {
+  return {
+    ...sanitizeUser(user),
+    mirrorStatus: user.mirrorEnabled ? "ACTIVE" : "OFF",
+    connectedExchanges: listExchanges().filter((exchange) => !!user[exchange.id]),
+    passwordStoredSecurely: true,
+    walletDetails: refreshWallets
+      ? await getConnectedWalletDetailsLive(user, usdtNgnRate)
+      : await getConnectedWalletDetails(user, usdtNgnRate),
+  };
+}
+
+async function buildSettingsUsersPayload(user, { refreshWallets = true } = {}) {
+  const usdtNgnRate = await getUsdtToNgnRateFromBybitPage().catch(() => null);
+
+  if (user.role === "admin") {
+    const users = await Promise.all(
+      db.users
+        .filter((item) => item.role === "user")
+        .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+        .map((item) => buildManagedUserSummary(item, usdtNgnRate, { refreshWallets }))
+    );
+
+    return {
+      scope: "admin",
+      users,
+      generatedAt: nowIso(),
+    };
+  }
+
+  const exchange = getPreferredExchange(user);
+  const account = getExchangeAccount(user, exchange);
+  const accountSnapshot = account
+    ? await getAccountSnapshot(account, exchange).catch(() => getCachedAccountSnapshot(account, exchange))
+    : null;
+
+  return {
+    scope: "user",
+    user: sanitizeUser(user),
+    accountSnapshot,
+    generatedAt: nowIso(),
+  };
 }
 
 async function getUsdtToNgnRate() {
@@ -2214,7 +2310,7 @@ function queueShortSwingSignal(signal) {
 }
 
 function queueQualityEmaSignal(signal) {
-  shortSwingSignalQueue = shortSwingSignalQueue
+  qualityEmaSignalQueue = qualityEmaSignalQueue
     .then(async () => {
       const settings = getQualityEmaSettings();
       if (!settings.enabled || String(signal?.strategyType || "").trim().toUpperCase() !== "QUALITY_ERS") {
@@ -2329,7 +2425,7 @@ function queueQualityEmaSignal(signal) {
       console.error("Quality EMA signal queue failed:", error.message);
     });
 
-  return shortSwingSignalQueue;
+  return qualityEmaSignalQueue;
 }
 
 async function monitorShortSwingTrades() {
@@ -3741,6 +3837,7 @@ async function handleApi(req, res, url) {
       };
       setUserPreferredExchange(user, exchange);
       persist();
+      scheduleSettingsUsersBroadcast("exchange_connected");
       sendJson(res, 200, {
         user: sanitizeUser(user),
         account: {
@@ -3944,6 +4041,7 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     user.mirrorEnabled = !!body.enabled;
     persist();
+    scheduleSettingsUsersBroadcast("user_mirror_updated");
     sendJson(res, 200, { user: sanitizeUser(user) });
     return true;
   }
@@ -3999,6 +4097,7 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     setUserPreferredExchange(user, body.exchange);
     persist();
+    scheduleSettingsUsersBroadcast("preferred_exchange_updated");
     sendJson(res, 200, { user: sanitizeUser(user) });
     return true;
   }
@@ -4045,13 +4144,7 @@ async function handleApi(req, res, url) {
       db.users
         .filter((user) => user.role === "user")
         .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
-        .map(async (user) => ({
-          ...sanitizeUser(user),
-          mirrorStatus: user.mirrorEnabled ? "ACTIVE" : "OFF",
-          connectedExchanges: listExchanges().filter((exchange) => !!user[exchange.id]),
-          passwordStoredSecurely: true,
-          walletDetails: await getConnectedWalletDetails(user, usdtNgnRate),
-        }))
+        .map((user) => buildManagedUserSummary(user, usdtNgnRate))
     );
     sendJson(res, 200, { users });
     return true;
@@ -4081,14 +4174,9 @@ async function handleApi(req, res, url) {
     targetUser.passwordSalt = salt;
     targetUser.passwordHash = hash;
     persist();
+    scheduleSettingsUsersBroadcast("admin_password_updated");
     sendJson(res, 200, {
-      user: {
-        ...sanitizeUser(targetUser),
-        mirrorStatus: targetUser.mirrorEnabled ? "ACTIVE" : "OFF",
-        connectedExchanges: listExchanges().filter((exchange) => !!targetUser[exchange.id]),
-        passwordStoredSecurely: true,
-        walletDetails: await getConnectedWalletDetails(targetUser, await getUsdtToNgnRateFromBybitPage().catch(() => null)),
-      },
+      user: await buildManagedUserSummary(targetUser, await getUsdtToNgnRateFromBybitPage().catch(() => null)),
     });
     return true;
   }
@@ -4109,14 +4197,9 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     targetUser.mirrorEnabled = !!body.enabled;
     persist();
+    scheduleSettingsUsersBroadcast("admin_mirror_updated");
     sendJson(res, 200, {
-      user: {
-        ...sanitizeUser(targetUser),
-        mirrorStatus: targetUser.mirrorEnabled ? "ACTIVE" : "OFF",
-        connectedExchanges: listExchanges().filter((exchange) => !!targetUser[exchange.id]),
-        passwordStoredSecurely: true,
-        walletDetails: await getConnectedWalletDetails(targetUser, await getUsdtToNgnRateFromBybitPage().catch(() => null)),
-      },
+      user: await buildManagedUserSummary(targetUser, await getUsdtToNgnRateFromBybitPage().catch(() => null)),
     });
     return true;
   }
@@ -4139,6 +4222,7 @@ async function handleApi(req, res, url) {
     db.sessions = db.sessions.filter((session) => session.userId !== targetUser.id);
     db.users = db.users.filter((user) => user.id !== targetUser.id);
     persist();
+    scheduleSettingsUsersBroadcast("admin_user_deleted");
     sendJson(res, 200, { deletedUserId: targetUser.id });
     return true;
   }
@@ -4404,6 +4488,111 @@ const server = http.createServer(async (req, res) => {
       error: error.message || "Something unexpected happened.",
     });
   }
+});
+
+const settingsUsersWss = new WebSocketServer({ noServer: true });
+const settingsUsersClients = new Set();
+
+function sendWebSocketJson(socket, payload) {
+  if (!socket || socket.readyState !== 1) {
+    return;
+  }
+  socket.send(JSON.stringify(payload));
+}
+
+function getSettingsSocketUser(socket) {
+  if (!socket?.sessionId) {
+    return null;
+  }
+
+  const session = db.sessions.find((item) => item.id === socket.sessionId);
+  if (!session || Date.parse(session.expiresAt) < Date.now()) {
+    return null;
+  }
+
+  return db.users.find((user) => user.id === session.userId) || null;
+}
+
+async function pushSettingsUsersSnapshot(socket, reason = "refresh") {
+  const user = getSettingsSocketUser(socket);
+  if (!user) {
+    socket.close();
+    return;
+  }
+
+  try {
+    const payload = await buildSettingsUsersPayload(user, { refreshWallets: true });
+    sendWebSocketJson(socket, {
+      type: "settings-users",
+      reason,
+      payload,
+    });
+  } catch (error) {
+    sendWebSocketJson(socket, {
+      type: "settings-users-error",
+      reason,
+      error: error.message || "Settings live update failed.",
+    });
+  }
+}
+
+function scheduleSettingsUsersBroadcast(reason = "update") {
+  for (const socket of settingsUsersClients) {
+    void pushSettingsUsersSnapshot(socket, reason);
+  }
+}
+
+settingsUsersWss.on("connection", (socket, request, auth = {}) => {
+  socket.sessionId = auth.sessionId || null;
+  settingsUsersClients.add(socket);
+  socket.refreshTimer = setInterval(() => {
+    void pushSettingsUsersSnapshot(socket, "interval");
+  }, SETTINGS_USERS_WS_REFRESH_MS);
+
+  void pushSettingsUsersSnapshot(socket, "initial");
+
+  socket.on("message", (raw) => {
+    try {
+      const payload = JSON.parse(String(raw || "{}"));
+      if (payload?.type === "refresh") {
+        void pushSettingsUsersSnapshot(socket, "manual");
+      }
+    } catch {
+      // Ignore malformed client messages.
+    }
+  });
+
+  socket.on("close", () => {
+    clearInterval(socket.refreshTimer);
+    settingsUsersClients.delete(socket);
+  });
+
+  socket.on("error", () => {
+    clearInterval(socket.refreshTimer);
+    settingsUsersClients.delete(socket);
+  });
+});
+
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname !== SETTINGS_USERS_WS_PATH) {
+    socket.destroy();
+    return;
+  }
+
+  const session = getSession(req);
+  const user = session ? db.users.find((item) => item.id === session.userId) || null : null;
+  if (!session || !user) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  settingsUsersWss.handleUpgrade(req, socket, head, (ws) => {
+    settingsUsersWss.emit("connection", ws, req, {
+      sessionId: session.id,
+    });
+  });
 });
 
 async function startServer() {

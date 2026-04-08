@@ -54,6 +54,7 @@ function getDefaultQualityEmaSettingsDraft() {
   return {
     enabled: false,
     autoTradeEnabled: false,
+    useAdaptiveStrategy: false,
     positionSizePercent: 5,
     takeProfitPercent: 1.5,
     stopLossPercent: 0.7,
@@ -128,6 +129,10 @@ const state = {
     evaluations: [],
     logs: [],
     trades: [],
+  },
+  settingsLive: {
+    connected: false,
+    statusMessage: "Realtime settings sync is offline.",
   },
   loadingStrategyDebug: false,
   loadingStrategySettings: false,
@@ -245,6 +250,14 @@ function refreshSignalPaneDom() {
     formatUsdtUnit,
   });
   bindSignalFeedActions();
+}
+
+function refreshSettingsPaneDom() {
+  if (!state.user || state.activeTab !== "settings") {
+    return;
+  }
+
+  render();
 }
 
 function updateSignalFeed(patch, options = {}) {
@@ -531,6 +544,106 @@ function disconnectSignalStream() {
   updateSignalFeed({
     streamConnected: false,
   });
+}
+
+function connectSettingsUsersSocket() {
+  if (!state.user || state.activeTab !== "settings" || typeof WebSocket === "undefined") {
+    return;
+  }
+
+  if (state.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.socket.readyState)) {
+    return;
+  }
+
+  clearTimeout(state.socketRetry);
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/settings-users`);
+  state.socket = socket;
+
+  socket.onopen = () => {
+    state.settingsLive = {
+      connected: true,
+      statusMessage: "Realtime settings sync is live.",
+    };
+    refreshSettingsPaneDom();
+  };
+
+  socket.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data || "{}");
+      if (message.type === "settings-users" && message.payload) {
+        if (message.payload.scope === "admin") {
+          state.users = Array.isArray(message.payload.users) ? message.payload.users : state.users;
+        } else if (message.payload.scope === "user") {
+          if (message.payload.user) {
+            state.user = normalizeUserPayload(message.payload.user);
+          }
+          if (message.payload.accountSnapshot) {
+            applyAccountSnapshot(message.payload.accountSnapshot);
+          }
+        }
+        state.settingsLive = {
+          connected: true,
+          statusMessage: "Realtime settings sync is live.",
+        };
+        refreshSettingsPaneDom();
+        return;
+      }
+
+      if (message.type === "settings-users-error") {
+        state.settingsLive = {
+          connected: false,
+          statusMessage: message.error || "Realtime settings sync hit an error.",
+        };
+        refreshSettingsPaneDom();
+      }
+    } catch {
+      state.settingsLive = {
+        connected: false,
+        statusMessage: "Realtime settings sync payload could not be parsed.",
+      };
+      refreshSettingsPaneDom();
+    }
+  };
+
+  socket.onerror = () => {
+    state.settingsLive = {
+      connected: false,
+      statusMessage: "Realtime settings sync is reconnecting...",
+    };
+    refreshSettingsPaneDom();
+  };
+
+  socket.onclose = () => {
+    if (state.socket === socket) {
+      state.socket = null;
+    }
+    state.settingsLive = {
+      connected: false,
+      statusMessage: "Realtime settings sync is reconnecting...",
+    };
+    refreshSettingsPaneDom();
+    if (!socket._manualClose && state.user && state.activeTab === "settings") {
+      clearTimeout(state.socketRetry);
+      state.socketRetry = setTimeout(() => {
+        connectSettingsUsersSocket();
+      }, 3000);
+    }
+  };
+}
+
+function disconnectSettingsUsersSocket() {
+  clearTimeout(state.socketRetry);
+  state.socketRetry = null;
+  if (state.socket) {
+    state.socket._manualClose = true;
+    state.socket.close();
+    state.socket = null;
+  }
+  state.settingsLive = {
+    connected: false,
+    statusMessage: "Realtime settings sync is offline.",
+  };
 }
 
 function connectSignalStream() {
@@ -2358,6 +2471,7 @@ async function loadDashboardData() {
   if (!state.user) {
     disconnectWatchSocket();
     disconnectSignalStream();
+    disconnectSettingsUsersSocket();
     stopSignalChartRefreshTimer();
     stopTradeRefreshTimer();
     state.loadingWatchlist = false;
@@ -2367,6 +2481,11 @@ async function loadDashboardData() {
 
   updateSignalNotificationPermission();
   connectSignalStream();
+  if (state.activeTab === "settings") {
+    connectSettingsUsersSocket();
+  } else {
+    disconnectSettingsUsersSocket();
+  }
   void loadSignalsSnapshot({ silent: true }).catch(() => {
     updateSignalFeed({
       statusMessage: "Signal snapshot will appear as soon as the stream responds.",
@@ -3428,6 +3547,13 @@ function renderQualityEmaSettingsSection() {
             <option value="true" ${draft.autoTradeEnabled ? "selected" : ""}>Enabled</option>
           </select>
         </label>
+        <label>
+          ML adaptive learning
+          <select name="useAdaptiveStrategy">
+            <option value="false" ${!draft.useAdaptiveStrategy ? "selected" : ""}>Disabled</option>
+            <option value="true" ${draft.useAdaptiveStrategy ? "selected" : ""}>Enabled</option>
+          </select>
+        </label>
         <label>Position size % <input name="positionSizePercent" type="number" min="0.1" max="100" step="0.1" value="${escapeHtml(draft.positionSizePercent)}" /></label>
         <label>Take profit % <input name="takeProfitPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.takeProfitPercent)}" /></label>
         <label>Stop loss % <input name="stopLossPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.stopLossPercent)}" /></label>
@@ -3540,6 +3666,7 @@ function renderSettingsPane() {
   const settingsDraft = state.settingsDraft || { apiKey: "", apiSecret: "", testnet: "false" };
   const activeExchange = getActiveExchange();
   const activeExchangeLabel = getExchangeLabel(activeExchange);
+  const settingsLiveLabel = state.settingsLive.connected ? "Live via websocket" : state.settingsLive.statusMessage;
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -3612,6 +3739,7 @@ function renderSettingsPane() {
           <div>
             <h3>${state.user.role === "admin" ? "Registered Users" : "Account Summary"}</h3>
             <p class="muted-copy">${state.user.role === "admin" ? "All registered users appear below whether they have connected an exchange or not." : "Your linked account and mirror status."}</p>
+            <p class="muted-copy">${settingsLiveLabel}</p>
           </div>
         </div>
         <div class="card-list">
@@ -3800,6 +3928,7 @@ function renderDashboardShell() {
       const nextTab = button.dataset.tab;
       if (nextTab === "home") {
         state.activeTab = "home";
+        disconnectSettingsUsersSocket();
         render();
         await withLoading(loadDashboardData);
         showNotice("Home refreshed");
@@ -3810,6 +3939,11 @@ function renderDashboardShell() {
       if (nextTab === "settings" && state.user?.role === "admin") {
         void loadShortSwingSettings().then(() => render()).catch(() => {});
         void loadQualityEmaSettings().then(() => render()).catch(() => {});
+      }
+      if (nextTab === "settings") {
+        connectSettingsUsersSocket();
+      } else {
+        disconnectSettingsUsersSocket();
       }
     });
   });
@@ -3968,6 +4102,7 @@ function bindDashboardActions() {
       await api("/api/auth/logout", { method: "POST", body: "{}" });
       disconnectWatchSocket();
       disconnectSignalStream();
+      disconnectSettingsUsersSocket();
       stopSignalChartRefreshTimer();
       if (window.SignalPage?.destroyActiveChart) {
         window.SignalPage.destroyActiveChart();
@@ -4217,6 +4352,7 @@ function bindQualityEmaSettingsActions() {
       const payload = {
         enabled: data.enabled === "true",
         autoTradeEnabled: data.autoTradeEnabled === "true",
+        useAdaptiveStrategy: data.useAdaptiveStrategy === "true",
         positionSizePercent: Number(data.positionSizePercent || 0),
         takeProfitPercent: Number(data.takeProfitPercent || 0),
         stopLossPercent: Number(data.stopLossPercent || 0),
@@ -4503,6 +4639,7 @@ async function bootstrap() {
     } else {
       disconnectWatchSocket();
       disconnectSignalStream();
+      disconnectSettingsUsersSocket();
       stopSignalChartRefreshTimer();
       if (window.SignalPage?.destroyActiveChart) {
         window.SignalPage.destroyActiveChart();
@@ -4514,6 +4651,7 @@ async function bootstrap() {
     state.user = null;
     disconnectWatchSocket();
     disconnectSignalStream();
+    disconnectSettingsUsersSocket();
     stopSignalChartRefreshTimer();
     if (window.SignalPage?.destroyActiveChart) {
       window.SignalPage.destroyActiveChart();
