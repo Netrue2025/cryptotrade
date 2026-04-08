@@ -45,12 +45,14 @@ class SignalModel {
       return document;
     }
 
+    const { createdAt, ...mutableFields } = document;
+
     await collection.updateOne(
       { signalKey: document.signalKey },
       {
-        $set: document,
+        $set: mutableFields,
         $setOnInsert: {
-          createdAt: document.createdAt,
+          createdAt,
         },
       },
       { upsert: true }

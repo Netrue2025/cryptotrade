@@ -34,6 +34,14 @@ function parsePositiveInteger(value, fallback) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+function parseBoolean(value, fallback = false) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  return normalized === "true";
+}
+
 function createSignalConfig(overrides = {}) {
   const timeframe = getEnvValue("SIGNAL_TIMEFRAME");
   return {
@@ -50,6 +58,7 @@ function createSignalConfig(overrides = {}) {
       BREAKOUT: 0.62,
       EMA_RSI: 0.6,
       PRO: 0.7,
+      TEST_PULSE: 0.5,
     },
     telegram: {
       token: getEnvValue("TELEGRAM_SIGNAL_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"),
@@ -68,6 +77,15 @@ function createSignalConfig(overrides = {}) {
       maxSimultaneousTrades: parseNumber(getEnvValue("SIGNAL_AUTO_TRADE_MAX_SIMULTANEOUS_TRADES"), 2),
       balancePercent: parseNumber(getEnvValue("SIGNAL_AUTO_TRADE_BALANCE_PERCENT"), 5),
       maxTradesPerPair: parseNumber(getEnvValue("SIGNAL_AUTO_TRADE_MAX_TRADES_PER_PAIR"), 1),
+    },
+    testStrategy: {
+      enabled: parseBoolean(getEnvValue("SIGNAL_TEST_STRATEGY_ENABLED"), false),
+      symbol: (getEnvValue("SIGNAL_TEST_STRATEGY_SYMBOL") || "BTCUSDT").toUpperCase(),
+      cadenceMinutes: parsePositiveInteger(getEnvValue("SIGNAL_TEST_STRATEGY_CADENCE_MINUTES"), 3),
+      confidence: parseNumber(getEnvValue("SIGNAL_TEST_STRATEGY_CONFIDENCE"), 0.99),
+      entryPrice: parseNumber(getEnvValue("SIGNAL_TEST_STRATEGY_ENTRY_PRICE"), 100),
+      takeProfitPercent: parseNumber(getEnvValue("SIGNAL_TEST_STRATEGY_TAKE_PROFIT_PERCENT"), 0.35),
+      stopLossPercent: parseNumber(getEnvValue("SIGNAL_TEST_STRATEGY_STOP_LOSS_PERCENT"), 0.2),
     },
     ...overrides,
   };

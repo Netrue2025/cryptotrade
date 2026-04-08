@@ -6,6 +6,7 @@ const { evaluateSupportStrategy } = require("../strategies/supportStrategy");
 const { evaluateBreakoutStrategy } = require("../strategies/breakoutStrategy");
 const { evaluateEmaRsiStrategy } = require("../strategies/emaRsiStrategy");
 const { evaluateProStrategy } = require("../strategies/proStrategy");
+const { evaluateTestPulseStrategy } = require("../strategies/testPulseStrategy");
 const { calculateEmaSeries, lastDefined, normalizeCandles } = require("../utils/candleMath");
 
 const STRATEGY_EVALUATORS = [
@@ -13,6 +14,7 @@ const STRATEGY_EVALUATORS = [
   evaluateBreakoutStrategy,
   evaluateEmaRsiStrategy,
   evaluateProStrategy,
+  evaluateTestPulseStrategy,
 ];
 
 function cloneValue(value) {
@@ -165,6 +167,8 @@ class SignalEngine extends EventEmitter {
       ...this.snapshot,
       timeframe: this.timeframe,
       generatedAt: new Date().toISOString(),
+      streamStatus: this.started ? "LIVE" : "IDLE",
+      statusMessage: this.status.message,
     };
   }
 
@@ -208,7 +212,12 @@ class SignalEngine extends EventEmitter {
       this.config.symbols.map(async (symbol) => {
         try {
           const candles = await this.marketDataService.getCandles(symbol, this.timeframe, this.config.historyLimit);
-          const strategyEvaluations = STRATEGY_EVALUATORS.map((evaluate) => evaluate({ symbol, timeframe: this.timeframe, candles }));
+          const strategyEvaluations = STRATEGY_EVALUATORS.map((evaluate) => evaluate({
+            symbol,
+            timeframe: this.timeframe,
+            candles,
+            config: this.config,
+          }));
           const debugEntry = this.buildDebugEntry({
             symbol,
             timeframe: this.timeframe,
@@ -259,7 +268,10 @@ class SignalEngine extends EventEmitter {
   }
 
   async refreshSnapshot() {
-    const signals = await this.signalModel.listActive({ timeframe: this.timeframe });
+    const activeSignals = await this.signalModel.listActive({ timeframe: this.timeframe });
+    const signals = this.config.testStrategy?.enabled
+      ? activeSignals
+      : activeSignals.filter((signal) => !signal?.meta?.testOnly);
     this.snapshot = {
       timeframe: this.timeframe,
       supportedTimeframes: this.config.supportedTimeframes,
@@ -275,9 +287,13 @@ class SignalEngine extends EventEmitter {
   }
 
   buildSignalRecord(symbol, timeframe, evaluation, candle) {
-    const createdAt = new Date(Number(candle.openTime || Date.now())).toISOString();
+    const signalTimestamp = Number(evaluation.signalTimestamp || candle.openTime || Date.now());
+    const createdAt = new Date(signalTimestamp).toISOString();
     const expiresAt = new Date(Date.parse(createdAt) + this.config.signalTtlMs).toISOString();
-    const signalKey = `${symbol}:${timeframe}:${evaluation.strategy}:${candle.openTime}`;
+    const signalKey = String(evaluation.signalKey || `${symbol}:${timeframe}:${evaluation.strategy}:${signalTimestamp}`);
+    const extraMeta = evaluation.meta && typeof evaluation.meta === "object" && !Array.isArray(evaluation.meta)
+      ? cloneValue(evaluation.meta)
+      : {};
     return {
       id: crypto.createHash("sha1").update(signalKey).digest("hex"),
       signalKey,
@@ -293,7 +309,7 @@ class SignalEngine extends EventEmitter {
       takeProfit: evaluation.takeProfit,
       timeframe,
       createdAt,
-      timestamp: Date.parse(createdAt),
+      timestamp: signalTimestamp,
       expiresAt,
       meta: {
         confidenceScore: Number(evaluation.confidence.toFixed(4)),
@@ -301,6 +317,7 @@ class SignalEngine extends EventEmitter {
         details: evaluation.details || {},
         supportLevel: evaluation.supportLevel || null,
         resistanceLevel: evaluation.resistanceLevel || null,
+        ...extraMeta,
       },
     };
   }
@@ -378,6 +395,36 @@ class SignalEngine extends EventEmitter {
     };
   }
 
+  async emitTestPulseSignal(timeframe) {
+    const evaluation = evaluateTestPulseStrategy({
+      symbol: this.config.testStrategy?.symbol,
+      timeframe,
+      candles: [],
+      config: this.config,
+    });
+
+    if (!evaluation?.matched) {
+      return null;
+    }
+
+    const signal = this.buildSignalRecord(this.config.testStrategy.symbol, timeframe, evaluation, {
+      openTime: evaluation.signalTimestamp,
+    });
+    const isExistingSignal = this.getStoredSignals().some((item) => item.id === signal.id);
+    await this.signalModel.upsert(signal);
+    await this.refreshSnapshot();
+    if (isExistingSignal) {
+      return signal;
+    }
+
+    this.logger.info(`Signal generated for ${signal.symbol} ${timeframe} ${evaluation.strategy} at confidence ${evaluation.confidence}`);
+    this.emit("signal", signal);
+    this.eventBus.emit(SIGNAL_EVENTS.SIGNAL_GENERATED, signal);
+    this.telegramService.dispatchSignal(signal);
+    this.logger.info(`Auto trade intentionally skipped for test signal ${signal.symbol} ${signal.strategy}.`);
+    return signal;
+  }
+
   async handleMarketData({ symbol, timeframe, candles = [] }) {
     const latestCandle = candles[candles.length - 1];
     if (!latestCandle) {
@@ -396,7 +443,12 @@ class SignalEngine extends EventEmitter {
       return [];
     }
 
-    const evaluations = STRATEGY_EVALUATORS.map((evaluate) => evaluate({ symbol, timeframe, candles }));
+    const evaluations = STRATEGY_EVALUATORS.map((evaluate) => evaluate({
+      symbol,
+      timeframe,
+      candles,
+      config: this.config,
+    }));
     this.lastEvaluations.set(symbol, this.buildDebugEntry({ symbol, timeframe, candles, evaluations }));
     const matchedSignals = [];
 
@@ -413,15 +465,23 @@ class SignalEngine extends EventEmitter {
       }
 
       const signal = this.buildSignalRecord(symbol, timeframe, evaluation, latestCandle);
+      const isExistingSignal = this.getStoredSignals().some((item) => item.id === signal.id);
       await this.signalModel.upsert(signal);
       matchedSignals.push(signal);
+      if (isExistingSignal) {
+        continue;
+      }
       this.logger.info(`Signal generated for ${symbol} ${timeframe} ${evaluation.strategy} at confidence ${evaluation.confidence}`);
       this.emit("signal", signal);
       this.eventBus.emit(SIGNAL_EVENTS.SIGNAL_GENERATED, signal);
       this.telegramService.dispatchSignal(signal);
-      void this.autoTradeService.execute(signal).catch((error) => {
-        this.logger.error(`Auto trade failed for ${signal.symbol}:`, error.message || error);
-      });
+      if (signal.meta?.testOnly) {
+        this.logger.info(`Auto trade intentionally skipped for test signal ${signal.symbol} ${signal.strategy}.`);
+      } else {
+        void this.autoTradeService.execute(signal).catch((error) => {
+          this.logger.error(`Auto trade failed for ${signal.symbol}:`, error.message || error);
+        });
+      }
     }
 
     return matchedSignals;
@@ -453,6 +513,14 @@ class SignalEngine extends EventEmitter {
 
   async scanMarket({ reason = "scan" } = {}) {
     this.setStatus(true, `Scanning ${this.config.symbols.length} pairs on ${this.timeframe} (${reason}).`);
+
+    if (this.config.testStrategy?.enabled) {
+      try {
+        await this.emitTestPulseSignal(this.timeframe);
+      } catch (error) {
+        this.logger.error("Test pulse signal generation failed:", error.message || error);
+      }
+    }
 
     const symbols = [...this.config.symbols];
     const scanConcurrency = Math.max(1, Math.floor(Number(this.config.scanConcurrency || 1)));

@@ -48,10 +48,10 @@
             <p class="muted-copy">Only the top 20 USDT pairs are tracked. Signals stay on the board until they expire after 24 hours or you delete them manually.</p>
           </div>
           <div class="signal-hero-stack">
-            <div class="signal-stream-pill ${statusTone}">
+            <div class="signal-stream-pill ${statusTone}" id="signal-stream-pill">
               <span class="signal-stream-dot"></span>
-              <strong>${streamLabel}</strong>
-              <span>${signalFeed?.timeframe || "15m"}</span>
+              <strong id="signal-stream-label">${streamLabel}</strong>
+              <span id="signal-stream-timeframe">${signalFeed?.timeframe || "15m"}</span>
             </div>
             <div class="signal-timeframe-toggle" role="group" aria-label="Signal timeframe">
               ${supportedTimeframes
@@ -78,15 +78,15 @@
         <section class="signal-page-toolbar">
           <div class="signal-toolbar-pill">
             <span>Tracked pairs</span>
-            <strong>${signalFeed?.pairs?.length || 20}</strong>
+            <strong id="signal-tracked-pairs-count">${signalFeed?.pairs?.length || 20}</strong>
           </div>
           <div class="signal-toolbar-pill">
             <span>Notifications</span>
-            <strong>${signalFeed?.notificationPermission || "default"}</strong>
+            <strong id="signal-notification-permission">${signalFeed?.notificationPermission || "default"}</strong>
           </div>
           <div class="signal-toolbar-pill">
             <span>Recent signals</span>
-            <strong>${signals.length}</strong>
+            <strong id="signal-recent-count">${signals.length}</strong>
           </div>
         </section>
 
@@ -94,7 +94,7 @@
           <div class="signal-board-head">
             <div>
               <h4>Latest BUY Signals</h4>
-              <p class="muted-copy">${signalFeed?.statusMessage || "Waiting for the next qualified setup."}</p>
+              <p class="muted-copy" id="signal-status-message">${signalFeed?.statusMessage || "Waiting for the next qualified setup."}</p>
             </div>
             <div class="signal-board-actions">
               <button class="text-link" id="signal-select-all-btn" type="button">${allSelected ? "Clear selection" : "Select all"}</button>

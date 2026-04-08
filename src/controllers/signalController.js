@@ -5,6 +5,7 @@ class SignalController {
   }
 
   async getSnapshot() {
+    await this.signalEngine.refreshSnapshot();
     return this.signalEngine.getSnapshot();
   }
 

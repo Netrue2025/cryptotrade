@@ -10,26 +10,57 @@ class MarketDataService {
   constructor({ logger = console, primaryExchange = "binance" } = {}) {
     this.logger = logger;
     this.primaryExchange = primaryExchange;
+    this.lastWorkingProvider = primaryExchange;
+  }
+
+  getProviderCandidates() {
+    const providers = {
+      bybit: () => getBybitCandles,
+      binance: () => getBinanceCandles,
+    };
+    const preferred = this.lastWorkingProvider === "bybit" ? "bybit" : this.primaryExchange;
+    const ordered = preferred === "bybit"
+      ? ["bybit", "binance"]
+      : ["binance", "bybit"];
+    return [...new Set(ordered)].map((name) => ({
+      name,
+      fetchCandles: providers[name](),
+    }));
+  }
+
+  async tryProvider(name, fetchCandles, symbol, timeframe, limit) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const candles = normalizeCandles(await fetchCandles(symbol, timeframe, limit, false));
+        if (candles.length) {
+          this.lastWorkingProvider = name;
+          return candles;
+        }
+        lastError = new Error(`${name} returned no candles for ${symbol} ${timeframe}.`);
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      }
+    }
+    throw lastError || new Error(`${name} failed to provide candles for ${symbol} ${timeframe}.`);
   }
 
   async getCandles(symbol, timeframe, limit = 240) {
-    const providers = this.primaryExchange === "bybit"
-      ? [() => getBybitCandles(symbol, timeframe, limit, false), () => getBinanceCandles(symbol, timeframe, limit, false)]
-      : [() => getBinanceCandles(symbol, timeframe, limit, false), () => getBybitCandles(symbol, timeframe, limit, false)];
-
-    let lastError = null;
-    for (const provider of providers) {
+    const providerErrors = [];
+    for (const provider of this.getProviderCandidates()) {
       try {
-        const candles = normalizeCandles(await provider());
-        if (candles.length) {
-          return candles;
-        }
+        return await this.tryProvider(provider.name, provider.fetchCandles, symbol, timeframe, limit);
       } catch (error) {
-        lastError = error;
+        providerErrors.push(`${provider.name}: ${error.message || error}`);
       }
     }
 
-    throw lastError || new Error(`No candles available for ${symbol} ${timeframe}.`);
+    throw new Error(
+      `No candles available for ${symbol} ${timeframe}. ${providerErrors.join(" | ")}`
+    );
   }
 
   async buildChart(symbol, timeframe, signal = null) {

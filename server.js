@@ -105,6 +105,7 @@ const signalTradeLearning = new SignalTradeLearning({
 });
 const marketDataService = new MarketDataService({
   logger: signalLogger,
+  primaryExchange: "bybit",
 });
 const signalTelegramService = new SignalTelegramService({
   config: signalConfig,
@@ -3201,7 +3202,7 @@ async function handleApi(req, res, url) {
 
     writeSse(res, {
       type: "snapshot",
-      payload: signalEngine.getSnapshot(),
+      payload: await signalController.getSnapshot(),
     });
 
     const onSignal = (signal) => {

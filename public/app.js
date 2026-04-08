@@ -211,6 +211,85 @@ function mergeSignalList(signals = []) {
     .slice(0, 500);
 }
 
+function areFlatArraysEqual(left = [], right = []) {
+  if (left === right) {
+    return true;
+  }
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => item === right[index]);
+}
+
+function areSignalListsEquivalent(left = [], right = []) {
+  if (left === right) {
+    return true;
+  }
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+  return left.every((signal, index) => {
+    const candidate = right[index];
+    return candidate
+      && signal.id === candidate.id
+      && Number(signal.timestamp || 0) === Number(candidate.timestamp || 0)
+      && String(signal.updatedAt || "") === String(candidate.updatedAt || "")
+      && Number(signal.confidence || 0) === Number(candidate.confidence || 0);
+  });
+}
+
+function patchSignalPaneDom(nextFeed) {
+  const streamPill = document.getElementById("signal-stream-pill");
+  if (streamPill) {
+    streamPill.classList.toggle("live", !!nextFeed.streamConnected);
+    streamPill.classList.toggle("lagging", !nextFeed.streamConnected);
+  }
+
+  const streamLabel = document.getElementById("signal-stream-label");
+  if (streamLabel) {
+    streamLabel.textContent = nextFeed.streamConnected ? "Live" : "Reconnecting";
+  }
+
+  const streamTimeframe = document.getElementById("signal-stream-timeframe");
+  if (streamTimeframe) {
+    streamTimeframe.textContent = nextFeed.timeframe || "15m";
+  }
+
+  const trackedPairsCount = document.getElementById("signal-tracked-pairs-count");
+  if (trackedPairsCount) {
+    trackedPairsCount.textContent = String(nextFeed?.pairs?.length || 20);
+  }
+
+  const notificationPermission = document.getElementById("signal-notification-permission");
+  if (notificationPermission) {
+    notificationPermission.textContent = nextFeed.notificationPermission || "default";
+  }
+
+  const recentCount = document.getElementById("signal-recent-count");
+  if (recentCount) {
+    recentCount.textContent = String((nextFeed.signals || []).length);
+  }
+
+  const statusMessage = document.getElementById("signal-status-message");
+  if (statusMessage) {
+    statusMessage.textContent = nextFeed.statusMessage || "Waiting for the next qualified setup.";
+  }
+
+  const alertsButton = document.getElementById("signal-alert-enable-btn");
+  if (alertsButton) {
+    alertsButton.textContent = nextFeed.audioUnlocked ? "Alerts armed" : "Enable alerts";
+  }
+}
+
+function shouldFullyRefreshSignalPane(previousFeed, nextFeed) {
+  return !areSignalListsEquivalent(previousFeed?.signals, nextFeed?.signals)
+    || !areFlatArraysEqual(previousFeed?.selectedIds, nextFeed?.selectedIds)
+    || !areFlatArraysEqual(previousFeed?.supportedTimeframes, nextFeed?.supportedTimeframes)
+    || String(previousFeed?.timeframe || "") !== String(nextFeed?.timeframe || "")
+    || !!previousFeed?.deleting !== !!nextFeed?.deleting
+    || !!previousFeed?.switchingTimeframe !== !!nextFeed?.switchingTimeframe;
+}
+
 function refreshSignalPaneDom() {
   if (!state.user || state.activeTab !== "signals") {
     return;
@@ -238,6 +317,7 @@ function refreshSettingsPaneDom() {
 }
 
 function updateSignalFeed(patch, options = {}) {
+  const previousFeed = state.signalFeed;
   state.signalFeed = {
     ...state.signalFeed,
     ...patch,
@@ -245,6 +325,11 @@ function updateSignalFeed(patch, options = {}) {
 
   if (options.render) {
     render();
+    return;
+  }
+
+  if (!shouldFullyRefreshSignalPane(previousFeed, state.signalFeed)) {
+    patchSignalPaneDom(state.signalFeed);
     return;
   }
 

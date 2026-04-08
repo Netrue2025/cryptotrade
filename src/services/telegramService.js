@@ -16,8 +16,11 @@ class SignalTelegramService {
   }
 
   formatSignalMessage(signal) {
+    const headline = signal?.meta?.testOnly
+      ? `${String(signal.symbol || "").replace(/USDT$/, "/USDT")} TEST BUY SIGNAL`
+      : `${String(signal.symbol || "").replace(/USDT$/, "/USDT")} BUY SIGNAL`;
     return [
-      `${String(signal.symbol || "").replace(/USDT$/, "/USDT")} BUY SIGNAL`,
+      headline,
       `Strategy: ${signal.strategy}`,
       `Entry: ${signal.entry}`,
       `SL: ${signal.stopLoss}`,
