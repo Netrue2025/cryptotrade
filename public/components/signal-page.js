@@ -1,11 +1,9 @@
 (function attachSignalPageComponent() {
   const STRATEGY_META = {
     SUPPORT: { label: "Support", className: "support" },
-    RESISTANCE: { label: "Resistance", className: "resistance" },
     EMA_RSI: { label: "EMA-RSI", className: "ema-rsi" },
     BREAKOUT: { label: "Breakout", className: "breakout" },
-    SWING_SPOT: { label: "Swing Spot", className: "breakout" },
-    QUALITY_ERS: { label: "Quality EMA", className: "ema-rsi" },
+    PRO: { label: "Pro", className: "resistance" },
   };
 
   let activeChart = null;
@@ -47,7 +45,7 @@
           <div>
             <p class="eyebrow">Realtime Buy Alerts</p>
             <h3>Signal Dashboard</h3>
-            <p class="muted-copy">Only the top 15 USDT pairs are tracked. Signals stay on the board until they expire after 24 hours or you delete them manually.</p>
+            <p class="muted-copy">Only the top 20 USDT pairs are tracked. Signals stay on the board until they expire after 24 hours or you delete them manually.</p>
           </div>
           <div class="signal-hero-stack">
             <div class="signal-stream-pill ${statusTone}">
@@ -80,7 +78,7 @@
         <section class="signal-page-toolbar">
           <div class="signal-toolbar-pill">
             <span>Tracked pairs</span>
-            <strong>${signalFeed?.pairs?.length || 15}</strong>
+            <strong>${signalFeed?.pairs?.length || 20}</strong>
           </div>
           <div class="signal-toolbar-pill">
             <span>Notifications</span>
@@ -138,7 +136,7 @@
                 : `
                   <div class="signal-empty-state">
                     <strong>No live BUY setups yet</strong>
-                    <p class="muted-copy">Signals will appear here when the 1h uptrend, 15m pullback, breakout, volume, and relative-strength rules align.</p>
+                    <p class="muted-copy">Signals will appear here when Support, Breakout, EMA-RSI, or Pro conditions confirm on the selected timeframe.</p>
                   </div>
                 `
             }
@@ -185,7 +183,7 @@
                 <div id="signal-chart-modal-host" class="signal-chart-modal-host">
                   ${chartPayload ? "" : `<p class="muted-copy">Loading live chart...</p>`}
                 </div>
-                <p class="modal-text">The strategy plots the 15m EMA pullback zone with entry and support/resistance levels for this BUY alert.</p>
+                <p class="modal-text">The chart plots the active timeframe with EMA overlays plus the entry, stop, and target for this BUY alert.</p>
               `
           }
         </div>

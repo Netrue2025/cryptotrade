@@ -28,21 +28,28 @@ function loadEnvFile() {
 
 loadEnvFile();
 
-const { sendTelegramAlert } = require("./services/telegram");
+const { createSignalConfig } = require("./src/config/signalConfig");
+const { SignalTelegramService } = require("./src/services/telegramService");
 
 async function testTelegram() {
+  const signalTelegramService = new SignalTelegramService({
+    config: createSignalConfig(),
+  });
   const testSignal = {
-    pair: "BTC/USDT",
-    strategyType: "EMA_RSI",
-    entryPrice: 67200,
+    symbol: "BTCUSDT",
+    strategy: "EMA_RSI",
+    entry: 67200,
     stopLoss: 66500,
     takeProfit: 69000,
-    timestamp: Date.now(),
-    confidence: "High",
+    timeframe: "15m",
+    confidence: 72,
   };
 
-  const result = await sendTelegramAlert(testSignal);
-  console.log("Telegram test result:", result);
+  await signalTelegramService.sendWithRetry(
+    signalTelegramService.config.telegram.chatId,
+    signalTelegramService.formatSignalMessage(testSignal)
+  );
+  console.log("Telegram test result:", { ok: true });
 }
 
 testTelegram().catch((error) => {

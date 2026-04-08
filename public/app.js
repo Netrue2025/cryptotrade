@@ -18,7 +18,7 @@ const SIGNAL_CHART_REFRESH_INTERVAL_MS = 5000;
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
 const STABLECOIN_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD"];
 const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
-const SIGNAL_INTERVAL_OPTIONS = ["15m", "1h", "1D"];
+const SIGNAL_INTERVAL_OPTIONS = ["15m", "1h", "1d"];
 const SIGNAL_CHART_TYPES = [
   { id: "candles", label: "Candles" },
   { id: "line", label: "Line" },
@@ -36,31 +36,21 @@ const SPOT_MIRROR_GUIDANCE = {
   },
 };
 
-function getDefaultShortSwingSettingsDraft() {
+function getDefaultSignalAutoTradeState() {
   return {
-    enabled: true,
-    autoTradeEnabled: false,
-    positionSizePercent: 50,
-    takeProfitPercent: 1.3,
-    stopLossPercent: 0.6,
-    breakevenTriggerPercent: 0.7,
-    maxSimultaneousTrades: 3,
-    maxTradesPerPairPerDay: 1,
-    btcDropGuardPercent: 1,
-  };
-}
-
-function getDefaultQualityEmaSettingsDraft() {
-  return {
-    enabled: false,
-    autoTradeEnabled: false,
-    useAdaptiveStrategy: false,
-    positionSizePercent: 5,
-    takeProfitPercent: 1.5,
-    stopLossPercent: 0.7,
-    breakevenTriggerPercent: 0.8,
-    maxSimultaneousTrades: 2,
-    maxTradesPerPairPerDay: 1,
+    settings: {
+      enabled: false,
+      firstTradeBalancePercent: 50,
+      secondTradeBalancePercent: 100,
+      maxSimultaneousTrades: 2,
+    },
+    runtime: {
+      exchange: "bybit",
+      activeTrades: 0,
+      remainingSlots: 2,
+      nextAllocationPercent: 50,
+    },
+    loaded: false,
   };
 }
 
@@ -121,32 +111,20 @@ const state = {
     apiSecret: "",
     testnet: "false",
   },
-  shortSwingSettingsDraft: getDefaultShortSwingSettingsDraft(),
-  qualityEmaSettingsDraft: getDefaultQualityEmaSettingsDraft(),
-  shortSwingDebug: {
-    generatedAt: "",
-    settings: getDefaultShortSwingSettingsDraft(),
-    evaluations: [],
-    logs: [],
-    trades: [],
-  },
   settingsLive: {
     connected: false,
     statusMessage: "Realtime settings sync is offline.",
   },
-  loadingStrategyDebug: false,
-  loadingStrategySettings: false,
-  loadingQualityStrategySettings: false,
-  savingStrategySettings: false,
-  savingQualityStrategySettings: false,
+  signalAutoTrade: getDefaultSignalAutoTradeState(),
   socket: null,
   socketRetry: null,
   socketRefreshTimer: null,
+  signalSocket: null,
   tradeRefreshTimer: null,
   signalFeed: {
     pairs: [],
     timeframe: "15m",
-    supportedTimeframes: ["15m"],
+    supportedTimeframes: ["15m", "1h", "1d"],
     signals: [],
     streamConnected: false,
     statusMessage: "Connecting to the live signal engine...",
@@ -163,7 +141,6 @@ const topbarActions = document.getElementById("topbar-actions");
 
 let watchlistRefreshPromise = null;
 let tradeRefreshPromise = null;
-let signalEventSource = null;
 let signalChartRefreshTimer = null;
 let signalAlertAudio = null;
 const seenSignalIds = new Set();
@@ -537,9 +514,13 @@ async function loadSignalsSnapshot(options = {}) {
 }
 
 function disconnectSignalStream() {
-  if (signalEventSource) {
-    signalEventSource.close();
-    signalEventSource = null;
+  if (state.signalSocket) {
+    state.signalSocket._manualClose = true;
+    if (typeof state.signalSocket.removeAllListeners === "function") {
+      state.signalSocket.removeAllListeners();
+    }
+    state.signalSocket.disconnect();
+    state.signalSocket = null;
   }
   updateSignalFeed({
     streamConnected: false,
@@ -574,6 +555,9 @@ function connectSettingsUsersSocket() {
       if (message.type === "settings-users" && message.payload) {
         if (message.payload.scope === "admin") {
           state.users = Array.isArray(message.payload.users) ? message.payload.users : state.users;
+          if (message.payload.signalAutoTrade) {
+            state.signalAutoTrade = normalizeSignalAutoTradePayload(message.payload.signalAutoTrade);
+          }
         } else if (message.payload.scope === "user") {
           if (message.payload.user) {
             state.user = normalizeUserPayload(message.payload.user);
@@ -647,53 +631,77 @@ function disconnectSettingsUsersSocket() {
 }
 
 function connectSignalStream() {
-  if (!state.user || signalEventSource) {
+  if (!state.user || typeof window.io !== "function") {
     return;
   }
 
-  signalEventSource = new EventSource("/api/signals/stream", { withCredentials: true });
+  if (state.signalSocket) {
+    if (state.signalSocket.connected || state.signalSocket.active) {
+      return;
+    }
+    state.signalSocket._manualClose = true;
+    if (typeof state.signalSocket.removeAllListeners === "function") {
+      state.signalSocket.removeAllListeners();
+    }
+    state.signalSocket.disconnect();
+    state.signalSocket = null;
+  }
 
-  signalEventSource.onopen = () => {
+  const socket = window.io("/signals", {
+    path: "/socket.io",
+    withCredentials: true,
+    transports: ["websocket", "polling"],
+  });
+  state.signalSocket = socket;
+
+  socket.on("connect", () => {
+    socket._manualClose = false;
     updateSignalFeed({
       streamConnected: true,
-      statusMessage: "Live Binance signal stream connected.",
+      statusMessage: "Live signal socket connected.",
     });
-  };
+  });
 
-  signalEventSource.onmessage = (event) => {
-    try {
-      const payload = JSON.parse(event.data || "{}");
-      if (payload.type === "snapshot") {
-        applySignalSnapshot(payload.payload || {}, { silent: true });
-      }
-      if (payload.type === "status") {
-        updateSignalFeed({
-          streamConnected: !!payload.payload?.ok,
-          statusMessage: payload.payload?.message || state.signalFeed.statusMessage,
-        });
-      }
-      if (payload.type === "signal" && payload.payload) {
-        const signal = payload.payload;
-        updateSignalFeed({
-          signals: mergeSignalList([signal, ...(state.signalFeed.signals || [])]),
-          statusMessage: `${signal.pair} triggered a fresh ${String(signal.strategyType || "").replace(/_/g, "-")} BUY setup.`,
-        });
-        announceSignal(signal);
-      }
-    } catch {
-      updateSignalFeed({
-        streamConnected: false,
-        statusMessage: "Signal stream payload could not be parsed.",
-      });
+  socket.on("signals:snapshot", (payload) => {
+    applySignalSnapshot(payload || {}, { silent: true });
+  });
+
+  socket.on("signals:status", (payload) => {
+    updateSignalFeed({
+      streamConnected: !!payload?.ok,
+      statusMessage: payload?.message || state.signalFeed.statusMessage,
+    });
+  });
+
+  socket.on("signals:new", (signal) => {
+    if (!signal) {
+      return;
     }
-  };
+    updateSignalFeed({
+      signals: mergeSignalList([signal, ...(state.signalFeed.signals || [])]),
+      statusMessage: `${signal.pair} triggered a fresh ${String(signal.strategyType || "").replace(/_/g, "-")} BUY setup.`,
+    });
+    announceSignal(signal);
+  });
 
-  signalEventSource.onerror = () => {
+  socket.on("disconnect", (reason) => {
+    const manuallyClosed = socket._manualClose || reason === "io client disconnect";
     updateSignalFeed({
       streamConnected: false,
-      statusMessage: "Signal stream reconnecting...",
+      statusMessage: manuallyClosed ? "Signal socket offline." : "Signal socket reconnecting...",
     });
-  };
+    if (manuallyClosed && state.signalSocket === socket) {
+      state.signalSocket = null;
+    }
+  });
+
+  socket.on("connect_error", (error) => {
+    const reason = String(error?.message || "").trim();
+    updateSignalFeed({
+      streamConnected: false,
+      statusMessage: reason ? `Signal socket reconnecting: ${reason}` : "Signal socket reconnecting...",
+    });
+  });
 }
 
 function stopSignalChartRefreshTimer() {
@@ -2361,6 +2369,26 @@ function applyAccountSnapshot(account) {
   state.estimatedPnlPercent = 0;
 }
 
+function normalizeSignalAutoTradePayload(payload = {}) {
+  const settings = payload.settings || {};
+  const runtime = payload.runtime || {};
+  return {
+    settings: {
+      enabled: !!settings.enabled,
+      firstTradeBalancePercent: Number(settings.firstTradeBalancePercent || 50),
+      secondTradeBalancePercent: Number(settings.secondTradeBalancePercent || 100),
+      maxSimultaneousTrades: Number(settings.maxSimultaneousTrades || 2),
+    },
+    runtime: {
+      exchange: String(runtime.exchange || "bybit"),
+      activeTrades: Number(runtime.activeTrades || 0),
+      remainingSlots: Number(runtime.remainingSlots || 0),
+      nextAllocationPercent: Number(runtime.nextAllocationPercent || 0),
+    },
+    loaded: true,
+  };
+}
+
 function getCachedAccountSnapshot(exchange = getActiveExchange()) {
   if (!state.user) {
     return null;
@@ -2397,73 +2425,20 @@ async function loadSavedExchangeSettings(exchange) {
   }
 }
 
-async function loadShortSwingSettings() {
+async function loadSignalAutoTradeSettings() {
   if (!state.user || state.user.role !== "admin") {
-    state.shortSwingSettingsDraft = getDefaultShortSwingSettingsDraft();
+    state.signalAutoTrade = getDefaultSignalAutoTradeState();
     return;
   }
 
-  state.loadingStrategySettings = true;
-  render();
   try {
-    const payload = await api("/api/strategy/short-swing/settings");
-    state.shortSwingSettingsDraft = {
-      ...getDefaultShortSwingSettingsDraft(),
-      ...(payload.settings || {}),
+    const payload = await api("/api/signals/auto-trade");
+    state.signalAutoTrade = normalizeSignalAutoTradePayload(payload);
+  } catch {
+    state.signalAutoTrade = {
+      ...getDefaultSignalAutoTradeState(),
+      loaded: false,
     };
-  } finally {
-    state.loadingStrategySettings = false;
-  }
-}
-
-async function loadQualityEmaSettings() {
-  if (!state.user || state.user.role !== "admin") {
-    state.qualityEmaSettingsDraft = getDefaultQualityEmaSettingsDraft();
-    return;
-  }
-
-  state.loadingQualityStrategySettings = true;
-  render();
-  try {
-    const payload = await api("/api/strategy/quality-ema/settings");
-    state.qualityEmaSettingsDraft = {
-      ...getDefaultQualityEmaSettingsDraft(),
-      ...(payload.settings || {}),
-    };
-  } finally {
-    state.loadingQualityStrategySettings = false;
-  }
-}
-
-async function loadShortSwingDebug() {
-  if (!state.user || state.user.role !== "admin") {
-    state.shortSwingDebug = {
-      generatedAt: "",
-      settings: getDefaultShortSwingSettingsDraft(),
-      evaluations: [],
-      logs: [],
-      trades: [],
-    };
-    return;
-  }
-
-  state.loadingStrategyDebug = true;
-  refreshSignalPaneDom();
-  try {
-    const payload = await api("/api/strategy/short-swing/debug");
-    state.shortSwingDebug = {
-      generatedAt: payload.generatedAt || "",
-      settings: {
-        ...getDefaultShortSwingSettingsDraft(),
-        ...(payload.settings || {}),
-      },
-      evaluations: Array.isArray(payload.evaluations) ? payload.evaluations : [],
-      logs: Array.isArray(payload.logs) ? payload.logs : [],
-      trades: Array.isArray(payload.trades) ? payload.trades : [],
-    };
-  } finally {
-    state.loadingStrategyDebug = false;
-    refreshSignalPaneDom();
   }
 }
 
@@ -2501,10 +2476,7 @@ async function loadDashboardData() {
   const settingsPromise = loadSavedExchangeSettings(getActiveExchange()).then(() => {
     render();
   });
-  const shortSwingSettingsPromise = loadShortSwingSettings().then(() => {
-    render();
-  });
-  const qualityEmaSettingsPromise = loadQualityEmaSettings().then(() => {
+  const signalAutoTradePromise = loadSignalAutoTradeSettings().then(() => {
     render();
   });
   const watchlistPromise = refreshWatchlistFeed()
@@ -2569,8 +2541,7 @@ async function loadDashboardData() {
   startTradeRefreshTimer();
   void accountPromise;
   void settingsPromise;
-  void shortSwingSettingsPromise;
-  void qualityEmaSettingsPromise;
+  void signalAutoTradePromise;
   void watchlistPromise;
 }
 
@@ -3472,201 +3443,14 @@ function renderCurrentUserWalletSummary() {
   `;
 }
 
-function renderShortSwingSettingsSection() {
-  if (state.user?.role !== "admin") {
-    return "";
-  }
-
-  const draft = state.shortSwingSettingsDraft || getDefaultShortSwingSettingsDraft();
-  return `
-    <section class="mobile-card${loadingClass(state.loadingStrategySettings)}">
-      ${state.loadingStrategySettings ? renderSectionLoadingOverlay("Loading strategy", "Fetching short swing controls") : ""}
-      <div class="section-head">
-        <div>
-          <h3>Short Swing Strategy</h3>
-          <p class="muted-copy">Control the live signal and auto-trade engine here instead of editing environment variables.</p>
-        </div>
-      </div>
-      <form id="short-swing-settings-form" class="stack-form subtle-form">
-        <label>
-          Strategy enabled
-          <select name="enabled">
-            <option value="true" ${draft.enabled ? "selected" : ""}>Enabled</option>
-            <option value="false" ${!draft.enabled ? "selected" : ""}>Disabled</option>
-          </select>
-        </label>
-        <label>
-          Auto trade
-          <select name="autoTradeEnabled">
-            <option value="false" ${!draft.autoTradeEnabled ? "selected" : ""}>Disabled</option>
-            <option value="true" ${draft.autoTradeEnabled ? "selected" : ""}>Enabled</option>
-          </select>
-        </label>
-        <label>Position size % <input name="positionSizePercent" type="number" min="0.1" max="100" step="0.1" value="${escapeHtml(draft.positionSizePercent)}" /></label>
-        <label>Take profit % <input name="takeProfitPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.takeProfitPercent)}" /></label>
-        <label>Stop loss % <input name="stopLossPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.stopLossPercent)}" /></label>
-        <label>Breakeven trigger % <input name="breakevenTriggerPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.breakevenTriggerPercent)}" /></label>
-        <label>Max simultaneous trades <input name="maxSimultaneousTrades" type="number" min="1" step="1" value="${escapeHtml(draft.maxSimultaneousTrades)}" /></label>
-        <label>Max trades per pair per day <input name="maxTradesPerPairPerDay" type="number" min="1" step="1" value="${escapeHtml(draft.maxTradesPerPairPerDay)}" /></label>
-        <label>BTC 15m drop guard % <input name="btcDropGuardPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.btcDropGuardPercent)}" /></label>
-        <button class="button-primary shimmer-button" type="submit" ${state.savingStrategySettings ? "disabled" : ""}>
-          ${state.savingStrategySettings ? "Saving..." : "Save strategy settings"}
-        </button>
-      </form>
-    </section>
-  `;
-}
-
-function renderQualityEmaSettingsSection() {
-  if (state.user?.role !== "admin") {
-    return "";
-  }
-
-  const draft = state.qualityEmaSettingsDraft || getDefaultQualityEmaSettingsDraft();
-  return `
-    <section class="mobile-card${loadingClass(state.loadingQualityStrategySettings)}">
-      ${state.loadingQualityStrategySettings ? renderSectionLoadingOverlay("Loading strategy", "Fetching EMA-RSI controls") : ""}
-      <div class="section-head">
-        <div>
-          <h3>Quality EMA-RSI Strategy</h3>
-          <p class="muted-copy">Manage the higher-quality EMA, RSI, support, and resistance strategy from the dashboard. It stays disabled until you enable and save it here.</p>
-        </div>
-      </div>
-      <form id="quality-ema-settings-form" class="stack-form subtle-form">
-        <label>
-          Strategy enabled
-          <select name="enabled">
-            <option value="false" ${!draft.enabled ? "selected" : ""}>Disabled</option>
-            <option value="true" ${draft.enabled ? "selected" : ""}>Enabled</option>
-          </select>
-        </label>
-        <label>
-          Auto trade
-          <select name="autoTradeEnabled">
-            <option value="false" ${!draft.autoTradeEnabled ? "selected" : ""}>Disabled</option>
-            <option value="true" ${draft.autoTradeEnabled ? "selected" : ""}>Enabled</option>
-          </select>
-        </label>
-        <label>
-          ML adaptive learning
-          <select name="useAdaptiveStrategy">
-            <option value="false" ${!draft.useAdaptiveStrategy ? "selected" : ""}>Disabled</option>
-            <option value="true" ${draft.useAdaptiveStrategy ? "selected" : ""}>Enabled</option>
-          </select>
-        </label>
-        <label>Position size % <input name="positionSizePercent" type="number" min="0.1" max="100" step="0.1" value="${escapeHtml(draft.positionSizePercent)}" /></label>
-        <label>Take profit % <input name="takeProfitPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.takeProfitPercent)}" /></label>
-        <label>Stop loss % <input name="stopLossPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.stopLossPercent)}" /></label>
-        <label>Breakeven trigger % <input name="breakevenTriggerPercent" type="number" min="0.1" step="0.1" value="${escapeHtml(draft.breakevenTriggerPercent)}" /></label>
-        <label>Max simultaneous trades <input name="maxSimultaneousTrades" type="number" min="1" step="1" value="${escapeHtml(draft.maxSimultaneousTrades)}" /></label>
-        <label>Max trades per pair per day <input name="maxTradesPerPairPerDay" type="number" min="1" step="1" value="${escapeHtml(draft.maxTradesPerPairPerDay)}" /></label>
-        <button class="button-primary shimmer-button" type="submit" ${state.savingQualityStrategySettings ? "disabled" : ""}>
-          ${state.savingQualityStrategySettings ? "Saving..." : "Save EMA-RSI strategy"}
-        </button>
-      </form>
-    </section>
-  `;
-}
-
-function renderShortSwingDebugPane() {
-  if (state.user?.role !== "admin") {
-    return "";
-  }
-
-  const debug = state.shortSwingDebug || {};
-  const evaluations = Array.isArray(debug.evaluations) ? debug.evaluations : [];
-  const logs = Array.isArray(debug.logs) ? debug.logs : [];
-  const trades = Array.isArray(debug.trades) ? debug.trades : [];
-
-  return `
-    <section class="mobile-card${loadingClass(state.loadingStrategyDebug)}">
-      ${state.loadingStrategyDebug ? renderSectionLoadingOverlay("Loading debug", "Evaluating all tracked pairs") : ""}
-      <div class="section-head">
-        <div>
-          <h3>Short Swing Debug</h3>
-          <p class="muted-copy">See exactly why each tracked pair passed or failed the live strategy filter.</p>
-        </div>
-        <div class="history-toolbar-actions">
-          <button id="strategy-debug-refresh-btn" class="text-link" type="button">Refresh debug</button>
-        </div>
-      </div>
-      <div class="signal-page-toolbar">
-        <div class="signal-toolbar-pill">
-          <span>Generated</span>
-          <strong>${debug.generatedAt ? new Date(debug.generatedAt).toLocaleTimeString() : "--"}</strong>
-        </div>
-        <div class="signal-toolbar-pill">
-          <span>Passing pairs</span>
-          <strong>${evaluations.filter((item) => item.eligible).length}</strong>
-        </div>
-        <div class="signal-toolbar-pill">
-          <span>Active trades</span>
-          <strong>${trades.length}</strong>
-        </div>
-      </div>
-      <div class="compact-list">
-        ${
-          evaluations.length
-            ? evaluations.map((item) => `
-              <div class="asset-card">
-                <div class="asset-row">
-                  <div>
-                    <strong>${item.pair}</strong>
-                    <p class="muted-copy">${item.eligible ? "Eligible now" : (item.failureReasons || []).slice(0, 2).join(" ") || "Waiting for setup."}</p>
-                  </div>
-                  <div class="asset-values">
-                    <strong class="${item.eligible ? "positive" : "negative"}">${item.eligible ? "PASS" : "FAIL"}</strong>
-                    <p class="muted-copy">${Math.round(Number(item.confidence || 0))}%</p>
-                  </div>
-                </div>
-                <div class="trade-detail-grid">
-                  <div class="trade-detail-pill"><span>Entry</span><strong>${item.metrics?.entryPrice ? formatNumber(item.metrics.entryPrice, 6) : "--"}</strong></div>
-                  <div class="trade-detail-pill"><span>RS 4H</span><strong>${item.metrics?.relativeStrength4h ?? "--"}</strong></div>
-                  <div class="trade-detail-pill"><span>BTC 15m</span><strong>${item.metrics?.btcDrop15m ?? "--"}%</strong></div>
-                </div>
-                <p class="muted-copy">Trend ${item.checks?.trendPriceAbove200 ? "ok" : "x"} | EMA ${item.checks?.trendEmaAligned ? "ok" : "x"} | Structure ${item.checks?.higherHighsHigherLows ? "ok" : "x"} | Pullback ${item.checks?.pullbackDetected ? "ok" : "x"} | Breakout ${item.checks?.breakoutClose && item.checks?.breakoutPreviousReset ? "ok" : "x"} | Volume ${item.checks?.breakoutVolume ? "ok" : "x"} | RS ${item.checks?.relativeStrength ? "ok" : "x"} | BTC guard ${item.checks?.btcGuardPassed ? "ok" : "x"}</p>
-              </div>
-            `).join("")
-            : `<p class="muted-copy">No strategy debug data yet.</p>`
-        }
-      </div>
-      <section class="mobile-card">
-        <div class="section-head">
-          <div>
-            <h3>Recent Strategy Logs</h3>
-            <p class="muted-copy">Latest signal, skip, trade, and stop-management events.</p>
-          </div>
-        </div>
-        <div class="compact-list">
-          ${
-            logs.length
-              ? logs.map((log) => `
-                <div class="asset-card">
-                  <div class="asset-row">
-                    <div>
-                      <strong>${String(log.eventType || "").replace(/_/g, " ")}</strong>
-                      <p class="muted-copy">${log.pair || "--"} ${log.reason || log.error || ""}</p>
-                    </div>
-                    <div class="asset-values">
-                      <strong>${log.tradeId ? String(log.tradeId).slice(-6) : "--"}</strong>
-                      <p class="muted-copy">${log.createdAt ? new Date(log.createdAt).toLocaleString() : "--"}</p>
-                    </div>
-                  </div>
-                </div>
-              `).join("")
-              : `<p class="muted-copy">No strategy logs yet.</p>`
-          }
-        </div>
-      </section>
-    </section>
-  `;
-}
-
 function renderSettingsPane() {
   const settingsDraft = state.settingsDraft || { apiKey: "", apiSecret: "", testnet: "false" };
   const activeExchange = getActiveExchange();
   const activeExchangeLabel = getExchangeLabel(activeExchange);
   const settingsLiveLabel = state.settingsLive.connected ? "Live via websocket" : state.settingsLive.statusMessage;
+  const signalAutoTrade = state.signalAutoTrade || getDefaultSignalAutoTradeState();
+  const signalAutoTradeSettings = signalAutoTrade.settings || {};
+  const signalAutoTradeRuntime = signalAutoTrade.runtime || {};
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -3732,8 +3516,35 @@ function renderSettingsPane() {
             : ""
         }
       </section>
-      ${renderShortSwingSettingsSection()}
-      ${renderQualityEmaSettingsSection()}
+      ${
+        state.user.role === "admin"
+          ? `
+            <section class="mobile-card">
+              <div class="section-head">
+                <div>
+                  <h3>Signal Auto Trade</h3>
+                  <p class="muted-copy">When enabled, the signal bot places BUY entries automatically: first slot uses 50% of available balance, second slot uses 100% of remaining balance. Maximum two open/pending auto trades.</p>
+                </div>
+              </div>
+              <form id="signal-auto-trade-form" class="stack-form subtle-form">
+                <label>
+                  Auto trade from signal engine
+                  <select name="enabled">
+                    <option value="true" ${signalAutoTradeSettings.enabled ? "selected" : ""}>Enabled</option>
+                    <option value="false" ${!signalAutoTradeSettings.enabled ? "selected" : ""}>Disabled</option>
+                  </select>
+                </label>
+                <p class="muted-copy">
+                  ${signalAutoTrade.loaded
+                    ? `Runtime: ${String(signalAutoTradeRuntime.exchange || "bybit").toUpperCase()} | Active auto trades ${signalAutoTradeRuntime.activeTrades || 0}/${signalAutoTradeSettings.maxSimultaneousTrades || 2} | Next allocation ${signalAutoTradeRuntime.nextAllocationPercent || 0}%`
+                    : "Runtime details are loading..."}
+                </p>
+                <button class="button-secondary shimmer-button" type="submit">Save signal auto-trade setting</button>
+              </form>
+            </section>
+          `
+          : ""
+      }
       <section class="mobile-card">
         <div class="section-head">
           <div>
@@ -3936,10 +3747,6 @@ function renderDashboardShell() {
       }
       state.activeTab = nextTab;
       render();
-      if (nextTab === "settings" && state.user?.role === "admin") {
-        void loadShortSwingSettings().then(() => render()).catch(() => {});
-        void loadQualityEmaSettings().then(() => render()).catch(() => {});
-      }
       if (nextTab === "settings") {
         connectSettingsUsersSocket();
       } else {
@@ -3953,8 +3760,6 @@ function bindDashboardActions() {
   bindHistoryActions();
   bindAdminUserDisclosureToggles();
   bindSignalFeedActions();
-  bindShortSwingSettingsActions();
-  bindQualityEmaSettingsActions();
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -4026,6 +3831,25 @@ function bindDashboardActions() {
         state.user = normalizeUserPayload(result.user);
         render();
         showNotice("Mirror preference updated");
+      }).catch((error) => showError(error.message));
+    });
+  }
+
+  const signalAutoTradeForm = document.getElementById("signal-auto-trade-form");
+  if (signalAutoTradeForm) {
+    signalAutoTradeForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await withLoading(async () => {
+        const data = Object.fromEntries(new FormData(signalAutoTradeForm).entries());
+        const payload = await api("/api/signals/auto-trade", {
+          method: "POST",
+          body: JSON.stringify({
+            enabled: data.enabled === "true",
+          }),
+        });
+        state.signalAutoTrade = normalizeSignalAutoTradePayload(payload);
+        render();
+        showNotice(`Signal auto trade ${state.signalAutoTrade.settings.enabled ? "enabled" : "disabled"}`);
       }).catch((error) => showError(error.message));
     });
   }
@@ -4142,24 +3966,11 @@ function bindDashboardActions() {
         apiSecret: "",
         testnet: "false",
       };
-      state.shortSwingSettingsDraft = getDefaultShortSwingSettingsDraft();
-      state.qualityEmaSettingsDraft = getDefaultQualityEmaSettingsDraft();
-      state.shortSwingDebug = {
-        generatedAt: "",
-        settings: getDefaultShortSwingSettingsDraft(),
-        evaluations: [],
-        logs: [],
-        trades: [],
-      };
-      state.loadingStrategyDebug = false;
-      state.loadingStrategySettings = false;
-      state.loadingQualityStrategySettings = false;
-      state.savingStrategySettings = false;
-      state.savingQualityStrategySettings = false;
+      state.signalAutoTrade = getDefaultSignalAutoTradeState();
       state.signalFeed = {
         pairs: [],
         timeframe: "15m",
-        supportedTimeframes: ["15m"],
+        supportedTimeframes: ["15m", "1h", "1d"],
         signals: [],
         streamConnected: false,
         statusMessage: "Connecting to the live signal engine...",
@@ -4257,125 +4068,6 @@ function bindSignalFeedActions() {
     });
   });
 
-  const strategyDebugRefreshButton = document.getElementById("strategy-debug-refresh-btn");
-  if (strategyDebugRefreshButton) {
-    strategyDebugRefreshButton.addEventListener("click", () => {
-      void loadShortSwingDebug().catch((error) => showError(error.message));
-    });
-  }
-}
-
-function bindShortSwingSettingsActions() {
-  const form = document.getElementById("short-swing-settings-form");
-  if (!form) {
-    return;
-  }
-
-  form.querySelectorAll("input, select").forEach((field) => {
-    field.addEventListener("input", () => {
-      state.shortSwingSettingsDraft = {
-        ...state.shortSwingSettingsDraft,
-        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
-      };
-    });
-    field.addEventListener("change", () => {
-      state.shortSwingSettingsDraft = {
-        ...state.shortSwingSettingsDraft,
-        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
-      };
-    });
-  });
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    state.savingStrategySettings = true;
-    render();
-    try {
-      const data = Object.fromEntries(new FormData(form).entries());
-      const payload = {
-        enabled: data.enabled === "true",
-        autoTradeEnabled: data.autoTradeEnabled === "true",
-        positionSizePercent: Number(data.positionSizePercent || 0),
-        takeProfitPercent: Number(data.takeProfitPercent || 0),
-        stopLossPercent: Number(data.stopLossPercent || 0),
-        breakevenTriggerPercent: Number(data.breakevenTriggerPercent || 0),
-        maxSimultaneousTrades: Number(data.maxSimultaneousTrades || 0),
-        maxTradesPerPairPerDay: Number(data.maxTradesPerPairPerDay || 0),
-        btcDropGuardPercent: Number(data.btcDropGuardPercent || 0),
-      };
-      const result = await api("/api/strategy/short-swing/settings", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      state.shortSwingSettingsDraft = {
-        ...getDefaultShortSwingSettingsDraft(),
-        ...(result.settings || {}),
-      };
-      await loadShortSwingDebug();
-      showNotice("Short swing strategy settings saved");
-    } catch (error) {
-      showError(error.message);
-    } finally {
-      state.savingStrategySettings = false;
-      render();
-    }
-  });
-}
-
-function bindQualityEmaSettingsActions() {
-  const form = document.getElementById("quality-ema-settings-form");
-  if (!form) {
-    return;
-  }
-
-  form.querySelectorAll("input, select").forEach((field) => {
-    field.addEventListener("input", () => {
-      state.qualityEmaSettingsDraft = {
-        ...state.qualityEmaSettingsDraft,
-        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
-      };
-    });
-    field.addEventListener("change", () => {
-      state.qualityEmaSettingsDraft = {
-        ...state.qualityEmaSettingsDraft,
-        [field.name]: field.type === "number" ? field.value : field.value === "true" ? true : field.value === "false" ? false : field.value,
-      };
-    });
-  });
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    state.savingQualityStrategySettings = true;
-    render();
-    try {
-      const data = Object.fromEntries(new FormData(form).entries());
-      const payload = {
-        enabled: data.enabled === "true",
-        autoTradeEnabled: data.autoTradeEnabled === "true",
-        useAdaptiveStrategy: data.useAdaptiveStrategy === "true",
-        positionSizePercent: Number(data.positionSizePercent || 0),
-        takeProfitPercent: Number(data.takeProfitPercent || 0),
-        stopLossPercent: Number(data.stopLossPercent || 0),
-        breakevenTriggerPercent: Number(data.breakevenTriggerPercent || 0),
-        maxSimultaneousTrades: Number(data.maxSimultaneousTrades || 0),
-        maxTradesPerPairPerDay: Number(data.maxTradesPerPairPerDay || 0),
-      };
-      const result = await api("/api/strategy/quality-ema/settings", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      state.qualityEmaSettingsDraft = {
-        ...getDefaultQualityEmaSettingsDraft(),
-        ...(result.settings || {}),
-      };
-      showNotice("Quality EMA-RSI strategy settings saved");
-    } catch (error) {
-      showError(error.message);
-    } finally {
-      state.savingQualityStrategySettings = false;
-      render();
-    }
-  });
 }
 
 function updateTradeDraft(patch) {
@@ -4417,8 +4109,9 @@ function bumpField(field, direction) {
 }
 
 async function submitTrade() {
+  const symbol = String(tradeDraft.symbol || "").trim().toUpperCase();
   const payload = {
-    symbol: tradeDraft.symbol,
+    symbol,
     side: tradeDraft.side,
     type: tradeDraft.type,
     quantity: tradeDraft.quantity,

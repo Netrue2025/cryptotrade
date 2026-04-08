@@ -1,6 +1,7 @@
 const { MongoClient } = require("mongodb");
 
 const { getMongoCollectionByName } = require("../lib/db");
+const { assertValidMongoConnectionString, getEnvValue, getMongoDbNameFromUri, isMongoConnectionString } = require("../lib/env");
 
 const DEFAULT_COLLECTION_NAME = "trade_learning_trades";
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -64,16 +65,20 @@ function roundNumber(value, digits = 4) {
 }
 
 function getMongoUri() {
-  return String(process.env.MONGODB_URI || process.env.MONGO_URI || "").trim();
+  return assertValidMongoConnectionString(
+    getEnvValue("MONGODB_URI", "MONGO_URI"),
+    "Trade learning MongoDB connection string"
+  );
 }
 
 function getAppMongoUri() {
-  return String(process.env.MONGODB_URI || "").trim();
+  const mongoUri = getEnvValue("MONGODB_URI");
+  return isMongoConnectionString(mongoUri) ? mongoUri : "";
 }
 
 function getMongoDbName(uri) {
-  return String(process.env.MONGODB_DB_NAME || process.env.MONGO_DB_NAME || "").trim()
-    || new URL(uri).pathname.replace(/^\//, "")
+  return getEnvValue("MONGODB_DB_NAME", "MONGO_DB_NAME")
+    || getMongoDbNameFromUri(uri, "trade_mvp")
     || "trade_mvp";
 }
 
@@ -112,7 +117,7 @@ function buildRsiRangeStats(trades = []) {
 
 class TradeLearningService {
   constructor({ collectionName, logger = console, ttlMs = DEFAULT_CACHE_TTL_MS } = {}) {
-    this.collectionName = String(collectionName || process.env.TRADE_LEARNING_COLLECTION || DEFAULT_COLLECTION_NAME).trim()
+    this.collectionName = String(collectionName || getEnvValue("TRADE_LEARNING_COLLECTION") || DEFAULT_COLLECTION_NAME).trim()
       || DEFAULT_COLLECTION_NAME;
     this.logger = logger;
     this.ttlMs = ttlMs;

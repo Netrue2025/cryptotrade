@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { WebSocketServer } = require("ws");
+const { getEnvValue, parseEnvFileValue } = require("./lib/env");
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -18,7 +19,7 @@ function loadEnvFile() {
       continue;
     }
     const key = line.slice(0, index).trim();
-    const value = line.slice(index + 1).trim();
+    const value = parseEnvFileValue(line.slice(index + 1));
     if (key && process.env[key] === undefined) {
       process.env[key] = value;
     }
@@ -31,26 +32,27 @@ const { loadDb, saveDb, ensureAdminUser, sanitizeUser, shouldUseMongo } = requir
 const { encryptSecret, decryptSecret, randomId, hashPassword, verifyPassword } = require("./lib/security");
 const { getExchangeClient, listExchanges, normalizeExchange } = require("./lib/exchanges");
 const { SubscriberModel } = require("./models/subscriberModel");
-const { DEFAULT_QUALITY_EMA_SETTINGS, normalizeQualityEmaSettings } = require("./strategies/quality-ema-config");
-const { SignalEngine } = require("./signals/engine");
-const { DEFAULT_SHORT_SWING_SETTINGS, normalizeShortSwingSettings } = require("./strategies/short-swing-config");
-const {
-  buildTelegramMessage,
-  getSignalBotDiagnostics,
-  sendTelegramAlert,
-  sendTelegramText,
-} = require("./services/telegram");
 const { emitOrderExecuted, orderEvents } = require("./services/orderEvents");
 const { TelegramService } = require("./services/telegramService");
 const { TradeLearningService } = require("./services/tradeLearning");
 const { TradeListener } = require("./services/tradeListener");
-const { createBroadcaster } = require("./utils/broadcast");
+const { createSignalConfig } = require("./src/config/signalConfig");
+const { SIGNAL_EVENTS, signalBus } = require("./src/events/signalBus");
+const { createLogger } = require("./src/utils/logger");
+const { SignalModel } = require("./src/models/Signal");
+const { TradeLearning: SignalTradeLearning } = require("./src/ml/tradeLearning");
+const { MarketDataService } = require("./src/services/marketDataService");
+const { SignalTelegramService } = require("./src/services/telegramService");
+const { AutoTradeService } = require("./src/services/autoTradeService");
+const { SocketSignalService } = require("./src/services/socketSignalService");
+const { SignalEngine } = require("./src/services/signalEngine");
+const { SignalController } = require("./src/controllers/signalController");
 
 const DEFAULT_PORT = 3000;
 const MAX_PORT_RETRIES = 10;
 
 function getConfiguredPort() {
-  const rawPort = process.env.PORT;
+  const rawPort = getEnvValue("PORT");
   const parsedPort = Number(rawPort || DEFAULT_PORT);
 
   if (Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
@@ -63,7 +65,7 @@ function getConfiguredPort() {
 
 const port = getConfiguredPort();
 const publicDir = path.join(__dirname, "public");
-const BYBIT_USDT_NGN_URL = process.env.BYBIT_USDT_NGN_URL || "https://www.bybit.com/en/convert/usdt-to-ngn/";
+const BYBIT_USDT_NGN_URL = getEnvValue("BYBIT_USDT_NGN_URL") || "https://www.bybit.com/en/convert/usdt-to-ngn/";
 const FIAT_RATE_CACHE_TTL_MS = 1000 * 60 * 15;
 const MARKET_WATCHLIST_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "PEPEUSDT"];
 const WATCHLIST_CACHE_TTL_MS = 1000 * 10;
@@ -74,36 +76,72 @@ const SIGNAL_EXPIRY_SWEEP_MS = 60_000;
 const ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 1000 * 60;
 const TRADE_RECONCILE_BACKGROUND_INTERVAL_MS = 15_000;
 const SERVICE_RETRY_INTERVAL_MS = 60_000;
-const MAX_STRATEGY_LOG_HISTORY = 1000;
 const SETTINGS_USERS_WS_REFRESH_MS = 20_000;
 const SETTINGS_USERS_WS_PATH = "/ws/settings-users";
+const SIGNAL_AUTO_TRADE_DEFAULT_FIRST_BALANCE_PERCENT = 50;
+const SIGNAL_AUTO_TRADE_DEFAULT_SECOND_BALANCE_PERCENT = 100;
+const SIGNAL_AUTO_TRADE_DEFAULT_MAX_SIMULTANEOUS_TRADES = 2;
+const SIGNAL_AUTO_TRADE_STRATEGY_TYPE = "SIGNAL_AUTO";
 
 let db = null;
 const tradeLearningService = new TradeLearningService();
-const signalEngine = new SignalEngine({
-  tradeLearningService,
-});
 const subscriberModel = new SubscriberModel();
 const telegramTradeService = new TelegramService({
-  subscriberModel,
-});
-const signalBroadcaster = createBroadcaster({
-  telegramService: telegramTradeService,
   subscriberModel,
 });
 const tradeListener = new TradeListener({
   telegramService: telegramTradeService,
   subscriberModel,
 });
+const signalConfig = createSignalConfig();
+const signalLogger = createLogger("signals");
+const signalModel = new SignalModel({
+  collectionName: signalConfig.storage.signalCollection,
+  logger: signalLogger,
+});
+const signalTradeLearning = new SignalTradeLearning({
+  collectionName: signalConfig.storage.learningCollection,
+  logger: signalLogger,
+});
+const marketDataService = new MarketDataService({
+  logger: signalLogger,
+});
+const signalTelegramService = new SignalTelegramService({
+  config: signalConfig,
+  logger: signalLogger,
+  subscriberModel,
+});
+const autoTradeService = new AutoTradeService({
+  eventBus: signalBus,
+  logger: signalLogger,
+  config: signalConfig.autoTrade,
+});
+const signalEngine = new SignalEngine({
+  config: signalConfig,
+  marketDataService,
+  signalModel,
+  eventBus: signalBus,
+  telegramService: signalTelegramService,
+  autoTradeService,
+  tradeLearning: signalTradeLearning,
+  logger: signalLogger,
+});
+const signalController = new SignalController({
+  signalEngine,
+  logger: signalLogger,
+});
+const socketSignalService = new SocketSignalService({
+  eventBus: signalBus,
+  logger: signalLogger,
+});
 orderEvents.on("orderExecuted", (orderEvent) => {
+  signalBus.emit(SIGNAL_EVENTS.TRADE_EXECUTED, {
+    execution: orderEvent,
+    executedAt: new Date().toISOString(),
+  });
   void tradeListener.handleOrderExecuted(orderEvent).catch((error) => {
     console.error("Order executed Telegram listener failed:", error.message || error);
   });
-});
-signalEngine.on("signal", (signal) => {
-  void broadcastSignalAlert(signal);
-  void queueShortSwingSignal(signal);
-  void queueQualityEmaSignal(signal);
 });
 signalEngine.on("snapshot", () => {
   persistSignalState();
@@ -117,68 +155,24 @@ const fiatRateCache = {
 const watchlistCache = new Map();
 let signalEngineStartPromise = null;
 let tradeListenerStartPromise = null;
-let shortSwingSignalQueue = Promise.resolve();
-let qualityEmaSignalQueue = Promise.resolve();
 
-function getShortSwingSettings() {
-  return normalizeShortSwingSettings(db?.meta?.shortSwingSettings, DEFAULT_SHORT_SWING_SETTINGS);
-}
-
-function getQualityEmaSettings() {
-  return normalizeQualityEmaSettings(db?.meta?.qualityEmaSettings, DEFAULT_QUALITY_EMA_SETTINGS);
-}
-
-function setShortSwingSettings(settings = {}) {
-  const normalized = normalizeShortSwingSettings(settings, DEFAULT_SHORT_SWING_SETTINGS);
-  db.meta = {
-    ...(db.meta || {}),
-    shortSwingSettings: normalized,
+function getSignalBotDiagnostics() {
+  const token = String(signalConfig?.telegram?.token || "").trim();
+  return {
+    tokenLoaded: !!token,
+    chatIdLoaded: !!signalConfig?.telegram?.chatId,
+    tokenPreview: token ? `${token.slice(0, 6)}...${token.slice(-4)}` : "",
+    queueDepth: signalTelegramService.queue.length,
   };
-  signalEngine.setStrategySettings({
-    ...signalEngine.getStrategySettings(),
-    shortSwing: normalized,
-  });
-  persist();
-  return normalized;
 }
 
-function setQualityEmaSettings(settings = {}) {
-  const normalized = normalizeQualityEmaSettings(settings, DEFAULT_QUALITY_EMA_SETTINGS);
-  db.meta = {
-    ...(db.meta || {}),
-    qualityEmaSettings: normalized,
-  };
-  signalEngine.setStrategySettings({
-    ...signalEngine.getStrategySettings(),
-    qualityEma: normalized,
-  });
-  persist();
-  return normalized;
-}
-
-async function broadcastSignalAlert(signal) {
-  const message = buildTelegramMessage(signal);
-  let subscriberResult = { sent: 0, skipped: 0, failed: 0, disabled: true };
-
-  if (telegramTradeService?.isEnabled?.() && subscriberModel?.isEnabled?.()) {
-    try {
-      subscriberResult = await signalBroadcaster.broadcast(message, "signal", {
-        telegramOptions: {
-          parse_mode: "Markdown",
-          disable_web_page_preview: false,
-        },
-      });
-    } catch (error) {
-      console.error(`Subscriber signal broadcast failed for ${signal?.pair || "unknown pair"}:`, error.message || error);
-    }
+async function sendTelegramText(text) {
+  if (!signalTelegramService.isEnabled() || !signalConfig?.telegram?.chatId) {
+    throw new Error("Telegram signal bot is not configured.");
   }
 
-  const signalBotResult = await sendTelegramAlert(signal);
-  return {
-    ok: !!signalBotResult?.ok || subscriberResult.sent > 0,
-    signalBot: signalBotResult,
-    subscribers: subscriberResult,
-  };
+  await signalTelegramService.sendWithRetry(signalConfig.telegram.chatId, String(text || "").trim() || "Signal bot test");
+  return { ok: true };
 }
 
 function persist() {
@@ -200,19 +194,113 @@ function persistSignalState() {
   db.meta = {
     ...(db.meta || {}),
     signalTimeframe: signalEngine.getTimeframe(),
+    signalAutoTrade: autoTradeService.getConfig(),
   };
   persist();
 }
 
-function sweepExpiredSignals() {
-  const expiredSignals = signalEngine.expireSignals();
+function toBoundedNumber(value, fallback, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function parseBooleanFlag(value, fallback = false) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
+function normalizeSignalAutoTradeConfig(config = {}) {
+  const current = autoTradeService.getConfig();
+  return {
+    enabled: parseBooleanFlag(config.enabled, current.enabled),
+    firstTradeBalancePercent: toBoundedNumber(
+      config.firstTradeBalancePercent,
+      Number(current.firstTradeBalancePercent || SIGNAL_AUTO_TRADE_DEFAULT_FIRST_BALANCE_PERCENT),
+      1,
+      100
+    ),
+    secondTradeBalancePercent: toBoundedNumber(
+      config.secondTradeBalancePercent,
+      Number(current.secondTradeBalancePercent || SIGNAL_AUTO_TRADE_DEFAULT_SECOND_BALANCE_PERCENT),
+      1,
+      100
+    ),
+    maxSimultaneousTrades: Math.round(
+      toBoundedNumber(
+        config.maxSimultaneousTrades,
+        Number(current.maxSimultaneousTrades || SIGNAL_AUTO_TRADE_DEFAULT_MAX_SIMULTANEOUS_TRADES),
+        1,
+        10
+      )
+    ),
+  };
+}
+
+function getSignalAutoTradeAdminUser() {
+  return db?.users?.find((user) => user.role === "admin") || null;
+}
+
+function isSignalAutoTradeIntent(trade) {
+  return String(trade?.strategyContext?.type || "").trim().toUpperCase() === SIGNAL_AUTO_TRADE_STRATEGY_TYPE;
+}
+
+function listActiveSignalAutoTrades({ exchange } = {}) {
+  const targetExchange = exchange ? normalizeExchange(exchange, "bybit") : null;
+  return (db?.tradeIntents || []).filter((trade) => {
+    if (!isSignalAutoTradeIntent(trade)) {
+      return false;
+    }
+
+    if (targetExchange && getTradeExchange(trade) !== targetExchange) {
+      return false;
+    }
+
+    const lifecycle = deriveTradeLifecycle(trade);
+    return lifecycle === "OPEN" || lifecycle === "PENDING";
+  });
+}
+
+function getSignalAutoTradeSettingsSnapshot() {
+  const settings = autoTradeService.getConfig();
+  const admin = getSignalAutoTradeAdminUser();
+  const exchange = admin ? getConnectedExchange(admin, getPreferredExchange(admin)) : "bybit";
+  const activeTrades = listActiveSignalAutoTrades({ exchange });
+  const remainingSlots = Math.max(0, Number(settings.maxSimultaneousTrades || 0) - activeTrades.length);
+  return {
+    settings,
+    runtime: {
+      exchange,
+      activeTrades: activeTrades.length,
+      remainingSlots,
+      nextAllocationPercent: remainingSlots
+        ? (activeTrades.length === 0 ? settings.firstTradeBalancePercent : settings.secondTradeBalancePercent)
+        : 0,
+    },
+  };
+}
+
+async function sweepExpiredSignals() {
+  const expiredSignals = await signalEngine.expireSignals();
   if (expiredSignals.length) {
     console.log(`Expired ${expiredSignals.length} signal${expiredSignals.length === 1 ? "" : "s"} after 24 hours.`);
   }
   return expiredSignals;
 }
 
-async function ensureSignalEngineRunning(force = false) {
+async function ensureSignalEngineRunning(force = false, options = {}) {
   if (signalEngine.started && !force) {
     return true;
   }
@@ -221,7 +309,7 @@ async function ensureSignalEngineRunning(force = false) {
     return signalEngineStartPromise;
   }
 
-  signalEngineStartPromise = signalEngine.start()
+  signalEngineStartPromise = signalEngine.start(options)
     .then(() => {
       console.log(`Signal engine is running on ${signalEngine.getTimeframe()}.`);
       return true;
@@ -1056,6 +1144,7 @@ async function buildSettingsUsersPayload(user, { refreshWallets = true } = {}) {
     return {
       scope: "admin",
       users,
+      signalAutoTrade: getSignalAutoTradeSettingsSnapshot(),
       generatedAt: nowIso(),
     };
   }
@@ -1851,14 +1940,6 @@ async function reconcileTradeStatuses() {
     }
   }
 
-  try {
-    if (await monitorShortSwingTrades()) {
-      changed = true;
-    }
-  } catch (error) {
-    console.error("Short swing trade monitor failed:", error.message);
-  }
-
   if (changed) {
     persist();
   }
@@ -1924,20 +2005,6 @@ function deriveTradeLifecycle(trade) {
   return "OPEN";
 }
 
-function isShortSwingTrade(trade) {
-  return String(trade?.strategyContext?.type || "").trim().toUpperCase() === "SHORT_SWING_SPOT";
-}
-
-function isQualityEmaTrade(trade) {
-  return String(trade?.strategyContext?.type || "").trim().toUpperCase() === "QUALITY_EMA_SUPPORT_RESISTANCE";
-}
-
-function hasActiveNonTakeProfitExitExecution(trade) {
-  return (trade?.exitOrders || []).some(
-    (exitOrder) => exitOrder.kind !== "TAKE_PROFIT" && isExecutionActive(exitOrder?.adminExecution)
-  );
-}
-
 function getStrategyReason(trade) {
   return String(trade?.strategyContext?.reason || "").trim() || "Trend Pullback Breakout";
 }
@@ -1965,39 +2032,6 @@ function getWeightedAverageExecutionPrice(executions = []) {
   return weighted.quantity > 0 ? weighted.notional / weighted.quantity : 0;
 }
 
-function buildTradeLearningContextFromSignal(signal) {
-  if (!signal || typeof signal !== "object") {
-    return null;
-  }
-
-  return {
-    support: Number(signal.supportLevel || signal?.meta?.supportLevel || 0) || null,
-    resistance: Number(signal.resistanceLevel || signal?.meta?.resistanceLevel || 0) || null,
-    confidence: Number(signal.confidence || 0) || null,
-    confidenceScore: Number(signal?.meta?.confidenceScore || 0) || null,
-    indicators: {
-      emaFast: Number(signal?.meta?.emaFast || 0) || null,
-      emaSlow: Number(signal?.meta?.emaSlow || 0) || null,
-      entryEmaFast: Number(signal?.meta?.entryEmaFast || 0) || null,
-      entryEmaSlow: Number(signal?.meta?.entryEmaSlow || 0) || null,
-      trendEmaFast: Number(signal?.meta?.trendEmaFast || 0) || null,
-      trendEmaSlow: Number(signal?.meta?.trendEmaSlow || 0) || null,
-      dailyEmaFast: Number(signal?.meta?.dailyEmaFast || 0) || null,
-      dailyEmaSlow: Number(signal?.meta?.dailyEmaSlow || 0) || null,
-      rsiEntry: Number(signal?.meta?.entryRsi || signal?.meta?.rsi14 || 0) || null,
-      rsiTrend: Number(signal?.meta?.trendRsi || 0) || null,
-      rsiOversold: Number(signal?.meta?.rsiOversold || 0) || null,
-      rsiOverbought: Number(signal?.meta?.rsiOverbought || 0) || null,
-      emaGapPercent: Number(signal?.meta?.emaGapPercent || 0) || null,
-      trendEmaGapPercent: Number(signal?.meta?.trendEmaGapPercent || 0) || null,
-      supportDistancePercent: Number(signal?.meta?.supportDistancePercent || 0) || null,
-      adaptiveStrategyEnabled: !!signal?.meta?.adaptiveStrategyEnabled,
-      adaptiveSource: String(signal?.meta?.adaptiveSource || "").trim() || null,
-      adaptiveSampleSize: Number(signal?.meta?.adaptiveSampleSize || 0) || null,
-    },
-  };
-}
-
 function buildClosedTradeLearningRecord(trade) {
   if (!trade || trade.side !== "BUY") {
     return null;
@@ -2023,13 +2057,7 @@ function buildClosedTradeLearningRecord(trade) {
   return {
     tradeKey: String(trade.id),
     tradeId: String(trade.id),
-    strategyType: String(
-      trade?.strategyContext?.type === "QUALITY_EMA_SUPPORT_RESISTANCE"
-        ? "QUALITY_ERS"
-        : trade?.strategyContext?.type === "SHORT_SWING_SPOT"
-          ? "SWING_SPOT"
-          : trade?.strategyContext?.type || "MANUAL"
-    ).trim().toUpperCase(),
+    strategyType: String(trade?.strategyContext?.type || "MANUAL").trim().toUpperCase(),
     exchange: getTradeExchange(trade),
     symbol: String(trade.symbol || "").trim().toUpperCase(),
     entryPrice,
@@ -2078,444 +2106,6 @@ async function syncTradeLearningHistory() {
   }
 
   console.log(`Trade learning history sync complete. ${syncedCount} closed trade${syncedCount === 1 ? "" : "s"} indexed.`);
-}
-
-function getTradeDayKey(value) {
-  const date = new Date(value || Date.now());
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function getAdminUser() {
-  return db?.users?.find((user) => user.role === "admin") || null;
-}
-
-function recordStrategyLog(eventType, payload = {}, persistImmediately = true) {
-  if (!db) {
-    return;
-  }
-
-  db.strategyLogs = [
-    {
-      id: randomId(12),
-      eventType,
-      createdAt: nowIso(),
-      ...payload,
-    },
-    ...(db.strategyLogs || []),
-  ].slice(0, MAX_STRATEGY_LOG_HISTORY);
-
-  if (persistImmediately) {
-    persist();
-  }
-}
-
-function countOpenAdminBuyTrades(adminId, exchange) {
-  return db.tradeIntents.filter((trade) => {
-    if (trade.createdByUserId !== adminId || getTradeExchange(trade) !== exchange || trade.side !== "BUY") {
-      return false;
-    }
-    const lifecycle = deriveTradeLifecycle(trade);
-    return lifecycle === "OPEN" || lifecycle === "PENDING";
-  }).length;
-}
-
-function countOpenAdminBuyTradesForStrategy(adminId, exchange, strategyType) {
-  const normalizedType = String(strategyType || "").trim().toUpperCase();
-  return db.tradeIntents.filter((trade) => {
-    if (trade.createdByUserId !== adminId || getTradeExchange(trade) !== exchange || trade.side !== "BUY") {
-      return false;
-    }
-    if (String(trade?.strategyContext?.type || "").trim().toUpperCase() !== normalizedType) {
-      return false;
-    }
-    const lifecycle = deriveTradeLifecycle(trade);
-    return lifecycle === "OPEN" || lifecycle === "PENDING";
-  }).length;
-}
-
-function hasStrategyTradeForPairToday(adminId, exchange, symbol, strategyType, limit) {
-  const todayKey = getTradeDayKey(Date.now());
-  const normalizedType = String(strategyType || "").trim().toUpperCase();
-  const tradeCount = db.tradeIntents.filter(
-    (trade) =>
-      String(trade?.strategyContext?.type || "").trim().toUpperCase() === normalizedType &&
-      trade.createdByUserId === adminId &&
-      getTradeExchange(trade) === exchange &&
-      trade.symbol === symbol &&
-      getTradeDayKey(trade.createdAt) === todayKey
-  ).length;
-  return tradeCount >= Number(limit || 1);
-}
-
-function hasShortSwingTradeForPairToday(adminId, exchange, symbol) {
-  const settings = getShortSwingSettings();
-  return hasStrategyTradeForPairToday(adminId, exchange, symbol, "SHORT_SWING_SPOT", settings.maxTradesPerPairPerDay);
-}
-
-async function buildStrategyOrderInput(admin, exchange, signal, positionSizePercent, strategyLabel = "strategy") {
-  const adminAccount = getExchangeAccount(admin, exchange);
-  if (!adminAccount) {
-    throw new Error(`Connect the admin ${getExchangeLabel(exchange)} account first.`);
-  }
-
-  const exchangeInfo = await getExchangeInfo(signal.pair, adminAccount.testnet, exchange);
-  const { details } = getSymbolFilters(exchangeInfo, signal.pair);
-  const quoteAsset = details.quoteAsset || "USDT";
-  const accountInfo = await getAccountInfo({ ...adminAccount, exchange }, exchange);
-  const quoteBalance = Number((accountInfo.balances || []).find((item) => item.asset === quoteAsset)?.free || 0);
-  const spendAmount = quoteBalance * (Number(positionSizePercent || 0) / 100);
-
-  if (!quoteBalance || spendAmount <= 0) {
-    throw new Error(`No free ${quoteAsset} balance is available for ${strategyLabel} auto-trading.`);
-  }
-
-  return {
-    symbol: signal.pair,
-    side: "BUY",
-    type: "MARKET",
-    quoteOrderQty: String(Math.min(spendAmount, quoteBalance)),
-  };
-}
-
-async function buildShortSwingOrderInput(admin, exchange, signal) {
-  const settings = getShortSwingSettings();
-  return buildStrategyOrderInput(admin, exchange, signal, settings.positionSizePercent, "short swing");
-}
-
-async function buildQualityEmaOrderInput(admin, exchange, signal) {
-  const settings = getQualityEmaSettings();
-  return buildStrategyOrderInput(admin, exchange, signal, settings.positionSizePercent, "quality EMA");
-}
-
-function queueShortSwingSignal(signal) {
-  shortSwingSignalQueue = shortSwingSignalQueue
-    .then(async () => {
-      const settings = getShortSwingSettings();
-      if (!settings.enabled || String(signal?.strategyType || "").trim().toUpperCase() !== "SWING_SPOT") {
-        return;
-      }
-
-      const admin = getAdminUser();
-      if (!admin) {
-        return;
-      }
-
-      const exchange = getPreferredExchange(admin);
-      await tradeListener.handleStrategySignalDetected(signal, exchange).catch((error) => {
-        console.error(`Short swing signal broadcast failed for ${signal.pair}:`, error.message);
-      });
-      recordStrategyLog("signal_detected", {
-        pair: signal.pair,
-        signalId: signal.id,
-        exchange,
-        entryPrice: signal.entryPrice,
-        takeProfit: signal.takeProfit,
-        stopLoss: signal.stopLoss,
-      });
-
-      if (!settings.autoTradeEnabled) {
-        recordStrategyLog("signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: "Auto-trade feature flag is disabled.",
-        });
-        return;
-      }
-
-      const adminAccount = getExchangeAccount(admin, exchange);
-      if (!adminAccount?.permissions?.canTrade) {
-        recordStrategyLog("signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: `Admin ${getExchangeLabel(exchange)} account is not trade-enabled.`,
-        });
-        return;
-      }
-
-      if ((db.tradeIntents || []).some((trade) => trade?.strategyContext?.signalId === signal.id)) {
-        return;
-      }
-
-      if (countOpenAdminBuyTradesForStrategy(admin.id, exchange, "SHORT_SWING_SPOT") >= settings.maxSimultaneousTrades) {
-        recordStrategyLog("signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: `Max ${settings.maxSimultaneousTrades} simultaneous trades already active.`,
-        });
-        return;
-      }
-
-      if (hasShortSwingTradeForPairToday(admin.id, exchange, signal.pair)) {
-        recordStrategyLog("signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: `Max ${settings.maxTradesPerPairPerDay} trade per pair per day already used.`,
-        });
-        return;
-      }
-
-      try {
-        const orderInput = await buildShortSwingOrderInput(admin, exchange, signal);
-        const strategyContext = {
-          type: "SHORT_SWING_SPOT",
-          signalId: signal.id,
-          signalTimestamp: signal.timestamp,
-          reason: String(signal?.meta?.reason || "Trend Pullback Breakout"),
-          signalReason: String(signal?.meta?.reason || "Trend Pullback Breakout"),
-          learningContext: buildTradeLearningContextFromSignal(signal),
-          breakevenTriggerPrice: String(
-            Number(signal?.meta?.breakevenTriggerPrice || 0)
-            || Number(signal.entryPrice || 0) * (1 + settings.breakevenTriggerPercent / 100)
-          ),
-          activeStopLossPrice: String(signal.stopLoss),
-          breakevenMoved: false,
-        };
-        const { trade } = await createTradeIntent(admin, exchange, orderInput, {
-          takeProfitTargetPrice: String(signal.takeProfit),
-          stopLossTargetPrice: String(signal.stopLoss),
-          strategyContext,
-          throwOnTpFailure: false,
-        });
-        recordStrategyLog("trade_executed", {
-          pair: trade.symbol,
-          tradeId: trade.id,
-          exchange,
-          signalId: signal.id,
-          entryPrice: getExecutionAveragePrice(trade.adminExecution) || Number(signal.entryPrice || 0),
-          takeProfit: trade.takeProfitTargetPrice,
-          stopLoss: trade.stopLossTargetPrice,
-        });
-      } catch (error) {
-        recordStrategyLog("signal_error", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          error: error.message,
-        });
-        console.error(`Short swing auto-trade failed for ${signal.pair}:`, error.message);
-      }
-    })
-    .catch((error) => {
-      console.error("Short swing signal queue failed:", error.message);
-    });
-
-  return shortSwingSignalQueue;
-}
-
-function queueQualityEmaSignal(signal) {
-  qualityEmaSignalQueue = qualityEmaSignalQueue
-    .then(async () => {
-      const settings = getQualityEmaSettings();
-      if (!settings.enabled || String(signal?.strategyType || "").trim().toUpperCase() !== "QUALITY_ERS") {
-        return;
-      }
-
-      const admin = getAdminUser();
-      if (!admin) {
-        return;
-      }
-
-      const exchange = getPreferredExchange(admin);
-      await tradeListener.handleStrategySignalDetected(signal, exchange).catch((error) => {
-        console.error(`Quality EMA signal broadcast failed for ${signal.pair}:`, error.message);
-      });
-      recordStrategyLog("quality_signal_detected", {
-        pair: signal.pair,
-        signalId: signal.id,
-        exchange,
-        entryPrice: signal.entryPrice,
-        takeProfit: signal.takeProfit,
-        stopLoss: signal.stopLoss,
-      });
-
-      if (!settings.autoTradeEnabled) {
-        recordStrategyLog("quality_signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: "Auto-trade feature flag is disabled.",
-        });
-        return;
-      }
-
-      const adminAccount = getExchangeAccount(admin, exchange);
-      if (!adminAccount?.permissions?.canTrade) {
-        recordStrategyLog("quality_signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: `Admin ${getExchangeLabel(exchange)} account is not trade-enabled.`,
-        });
-        return;
-      }
-
-      if ((db.tradeIntents || []).some((trade) => trade?.strategyContext?.signalId === signal.id)) {
-        return;
-      }
-
-      if (countOpenAdminBuyTradesForStrategy(admin.id, exchange, "QUALITY_EMA_SUPPORT_RESISTANCE") >= settings.maxSimultaneousTrades) {
-        recordStrategyLog("quality_signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: `Max ${settings.maxSimultaneousTrades} simultaneous trades already active.`,
-        });
-        return;
-      }
-
-      if (hasStrategyTradeForPairToday(admin.id, exchange, signal.pair, "QUALITY_EMA_SUPPORT_RESISTANCE", settings.maxTradesPerPairPerDay)) {
-        recordStrategyLog("quality_signal_skipped", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          reason: `Max ${settings.maxTradesPerPairPerDay} trade per pair per day already used.`,
-        });
-        return;
-      }
-
-      try {
-        const orderInput = await buildQualityEmaOrderInput(admin, exchange, signal);
-        const strategyContext = {
-          type: "QUALITY_EMA_SUPPORT_RESISTANCE",
-          signalId: signal.id,
-          signalTimestamp: signal.timestamp,
-          reason: String(signal?.meta?.reason || "EMA RSI Support Resistance"),
-          signalReason: String(signal?.meta?.reason || "EMA RSI Support Resistance"),
-          learningContext: buildTradeLearningContextFromSignal(signal),
-          breakevenTriggerPrice: String(
-            Number(signal?.meta?.breakevenTriggerPrice || 0)
-            || Number(signal.entryPrice || 0) * (1 + settings.breakevenTriggerPercent / 100)
-          ),
-          activeStopLossPrice: String(signal.stopLoss),
-          breakevenMoved: false,
-        };
-        const { trade } = await createTradeIntent(admin, exchange, orderInput, {
-          takeProfitTargetPrice: String(signal.takeProfit),
-          stopLossTargetPrice: String(signal.stopLoss),
-          strategyContext,
-          throwOnTpFailure: false,
-        });
-        recordStrategyLog("quality_trade_executed", {
-          pair: trade.symbol,
-          tradeId: trade.id,
-          exchange,
-          signalId: signal.id,
-          entryPrice: getExecutionAveragePrice(trade.adminExecution) || Number(signal.entryPrice || 0),
-          takeProfit: trade.takeProfitTargetPrice,
-          stopLoss: trade.stopLossTargetPrice,
-        });
-      } catch (error) {
-        recordStrategyLog("quality_signal_error", {
-          pair: signal.pair,
-          signalId: signal.id,
-          exchange,
-          error: error.message,
-        });
-        console.error(`Quality EMA auto-trade failed for ${signal.pair}:`, error.message);
-      }
-    })
-    .catch((error) => {
-      console.error("Quality EMA signal queue failed:", error.message);
-    });
-
-  return qualityEmaSignalQueue;
-}
-
-async function monitorShortSwingTrades() {
-  let changed = false;
-  const priceCache = new Map();
-
-  for (const trade of db.tradeIntents) {
-    if (!isShortSwingTrade(trade) && !isQualityEmaTrade(trade)) {
-      continue;
-    }
-    if (trade.side !== "BUY" || trade.adminExecution?.status !== "FILLED") {
-      continue;
-    }
-    if (deriveTradeLifecycle(trade) !== "OPEN" || getRemainingTradeQuantity(trade) <= 0 || hasActiveNonTakeProfitExitExecution(trade)) {
-      continue;
-    }
-
-    const admin = db.users.find((user) => user.id === trade.createdByUserId);
-    const exchange = getTradeExchange(trade);
-    const adminAccount = getExchangeAccount(admin, exchange);
-    if (!admin || !adminAccount) {
-      continue;
-    }
-
-    const priceCacheKey = `${exchange}:${trade.symbol}:${adminAccount.testnet ? "testnet" : "mainnet"}`;
-    if (!priceCache.has(priceCacheKey)) {
-      const ticker = await getTickerPrice(trade.symbol, adminAccount.testnet, exchange).catch(() => null);
-      priceCache.set(priceCacheKey, Number(ticker?.price || 0));
-    }
-
-    const currentPrice = Number(priceCache.get(priceCacheKey) || 0);
-    if (!currentPrice) {
-      continue;
-    }
-
-    const entryPrice = getExecutionAveragePrice(trade.adminExecution) || Number(trade.price || 0);
-    const strategySettings = isQualityEmaTrade(trade) ? getQualityEmaSettings() : getShortSwingSettings();
-    const breakevenTriggerPrice = Number(
-      trade?.strategyContext?.breakevenTriggerPrice || entryPrice * (1 + strategySettings.breakevenTriggerPercent / 100)
-    );
-    const activeStopLossPrice = Number(trade?.strategyContext?.activeStopLossPrice || trade.stopLossTargetPrice || 0);
-
-    if (!trade.strategyContext) {
-      trade.strategyContext = {
-        type: isQualityEmaTrade(trade) ? "QUALITY_EMA_SUPPORT_RESISTANCE" : "SHORT_SWING_SPOT",
-        reason: isQualityEmaTrade(trade) ? "EMA RSI Support Resistance" : "Trend Pullback Breakout",
-        signalReason: isQualityEmaTrade(trade) ? "EMA RSI Support Resistance" : "Trend Pullback Breakout",
-        breakevenTriggerPrice: String(breakevenTriggerPrice),
-        activeStopLossPrice: String(activeStopLossPrice),
-        breakevenMoved: false,
-      };
-      changed = true;
-    }
-
-    if (!trade.strategyContext.breakevenMoved && breakevenTriggerPrice > 0 && currentPrice >= breakevenTriggerPrice) {
-      trade.strategyContext.breakevenMoved = true;
-      trade.strategyContext.activeStopLossPrice = String(entryPrice);
-      changed = true;
-      recordStrategyLog("breakeven_armed", {
-        pair: trade.symbol,
-        tradeId: trade.id,
-        exchange,
-        entryPrice,
-        triggerPrice: breakevenTriggerPrice,
-      }, false);
-    }
-
-    const nextStopLossPrice = Number(trade.strategyContext.activeStopLossPrice || activeStopLossPrice || 0);
-    if (nextStopLossPrice > 0 && currentPrice <= nextStopLossPrice) {
-      const stopKind = trade.strategyContext.breakevenMoved ? "BREAKEVEN_STOP" : "STOP_LOSS";
-      await executeTradeExit(trade, admin, {
-        kind: stopKind,
-        type: "MARKET",
-        reason: getStrategyReason(trade),
-        triggerPrice: nextStopLossPrice,
-        cancelTakeProfits: true,
-      });
-      recordStrategyLog("stop_exit_triggered", {
-        pair: trade.symbol,
-        tradeId: trade.id,
-        exchange,
-        exitKind: stopKind,
-        triggerPrice: nextStopLossPrice,
-        currentPrice,
-      }, false);
-      changed = true;
-    }
-  }
-
-  return changed;
 }
 
 function serializeTradeForAdmin(trade) {
@@ -3070,6 +2660,104 @@ async function createTradeIntent(admin, exchange, orderInput, options = {}) {
   };
 }
 
+async function executeSignalAutoTrade(signal, context = {}) {
+  const settings = normalizeSignalAutoTradeConfig(context.config || autoTradeService.getConfig());
+  const admin = getSignalAutoTradeAdminUser();
+  if (!admin) {
+    return { ok: false, skipped: true, reason: "admin_not_found" };
+  }
+
+  const exchange = getConnectedExchange(admin, getPreferredExchange(admin));
+  const account = getExchangeAccount(admin, exchange);
+  if (!account) {
+    return { ok: false, skipped: true, reason: "admin_exchange_not_connected" };
+  }
+  if (!account.permissions?.canTrade) {
+    return { ok: false, skipped: true, reason: "admin_exchange_trade_permission_missing" };
+  }
+
+  const activeAutoTrades = listActiveSignalAutoTrades({ exchange });
+  if (activeAutoTrades.length >= Number(settings.maxSimultaneousTrades || SIGNAL_AUTO_TRADE_DEFAULT_MAX_SIMULTANEOUS_TRADES)) {
+    return { ok: false, skipped: true, reason: "max_auto_trade_slots_reached" };
+  }
+
+  const exchangeInfo = await getExchangeInfo(signal.symbol, account.testnet, exchange);
+  const { details } = getSymbolFilters(exchangeInfo, signal.symbol);
+  const quoteAsset = String(details.quoteAsset || "USDT").toUpperCase();
+  const accountInfo = await getAccountInfo({ ...account, exchange }, exchange);
+  const freeQuoteBalance = Number(
+    (accountInfo.balances || []).find((item) => String(item.asset || "").toUpperCase() === quoteAsset)?.free || 0
+  );
+
+  if (freeQuoteBalance <= 0) {
+    return { ok: false, skipped: true, reason: "insufficient_quote_balance" };
+  }
+
+  const allocationPercent = activeAutoTrades.length === 0
+    ? Number(settings.firstTradeBalancePercent || SIGNAL_AUTO_TRADE_DEFAULT_FIRST_BALANCE_PERCENT)
+    : Number(settings.secondTradeBalancePercent || SIGNAL_AUTO_TRADE_DEFAULT_SECOND_BALANCE_PERCENT);
+  const spendAmount = freeQuoteBalance * (allocationPercent / 100);
+
+  if (spendAmount <= 0) {
+    return { ok: false, skipped: true, reason: "calculated_spend_amount_invalid" };
+  }
+
+  const orderInput = {
+    symbol: signal.symbol,
+    side: "BUY",
+    type: "MARKET",
+    quoteOrderQty: String(spendAmount),
+  };
+
+  const { trade, normalizedOrderInput } = await createTradeIntent(admin, exchange, orderInput, {
+    throwOnTpFailure: false,
+    takeProfitTargetPrice: signal.takeProfit ? String(signal.takeProfit) : null,
+    stopLossTargetPrice: signal.stopLoss ? String(signal.stopLoss) : null,
+    strategyContext: {
+      type: SIGNAL_AUTO_TRADE_STRATEGY_TYPE,
+      reason: `${String(signal.strategy || "SIGNAL").replace(/_/g, " ")} auto signal`,
+      signalReason: String(signal?.meta?.reason || "").trim() || "Signal engine qualified this setup.",
+      source: "signal_engine",
+      signalId: signal.id,
+      signalSymbol: signal.symbol,
+      signalStrategy: signal.strategy,
+      signalTimeframe: signal.timeframe,
+      signalConfidence: Number(signal.confidence || 0),
+      autoTrade: {
+        allocationPercent,
+        activeTradesBefore: activeAutoTrades.length,
+        maxSimultaneousTrades: Number(settings.maxSimultaneousTrades || SIGNAL_AUTO_TRADE_DEFAULT_MAX_SIMULTANEOUS_TRADES),
+      },
+      learningContext: {
+        strategyType: String(signal.strategy || "SIGNAL").trim().toUpperCase(),
+        timeframe: String(signal.timeframe || "").trim(),
+        indicators: {
+          confidence: Number(signal.confidence || 0),
+        },
+      },
+    },
+  });
+
+  return {
+    ok: true,
+    tradeId: trade.id,
+    exchange,
+    symbol: signal.symbol,
+    quoteAsset,
+    allocationPercent,
+    spendAmount: Number(spendAmount.toFixed(8)),
+    orderInput: {
+      symbol: normalizedOrderInput.symbol,
+      side: normalizedOrderInput.side,
+      type: normalizedOrderInput.type,
+      quoteOrderQty: normalizedOrderInput.quoteOrderQty || null,
+      quantity: normalizedOrderInput.quantity || null,
+    },
+  };
+}
+
+autoTradeService.setExecutor(executeSignalAutoTrade);
+
 async function executeTradeExit(trade, admin, options = {}) {
   const exchange = getTradeExchange(trade);
   const adminAccount = getExchangeAccount(admin, exchange);
@@ -3469,8 +3157,8 @@ async function handleApi(req, res, url) {
     if (!user) {
       return true;
     }
-    sweepExpiredSignals();
-    sendJson(res, 200, signalEngine.getSnapshot());
+    await sweepExpiredSignals();
+    sendJson(res, 200, await signalController.getSnapshot());
     return true;
   }
 
@@ -3487,7 +3175,7 @@ async function handleApi(req, res, url) {
       return true;
     }
 
-    const snapshot = signalEngine.getChartSnapshot(pair, signalId);
+    const snapshot = await signalController.getChart({ pair, signalId });
     if (!snapshot) {
       sendJson(res, 404, { error: "No signal chart data found for that pair." });
       return true;
@@ -3503,7 +3191,7 @@ async function handleApi(req, res, url) {
       return true;
     }
 
-    sweepExpiredSignals();
+    await sweepExpiredSignals();
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -3574,14 +3262,14 @@ async function handleApi(req, res, url) {
       return true;
     }
 
-    const deleted = signalEngine.deleteSignals(signalIds);
-    if (!deleted.length) {
+    const deleted = await signalController.deleteSignals(signalIds);
+    if (!deleted?.deletedCount) {
       sendJson(res, 404, { error: "No matching active signals were found to delete." });
       return true;
     }
 
     sendJson(res, 200, {
-      deletedCount: deleted.length,
+      deletedCount: deleted.deletedCount,
       signals: signalEngine.getSnapshot().signals,
     });
     return true;
@@ -3601,7 +3289,7 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      const snapshot = await signalEngine.setTimeframe(timeframe);
+      const snapshot = await signalController.updateTimeframe(timeframe);
       persistSignalState();
       sendJson(res, 200, snapshot);
     } catch (error) {
@@ -3610,88 +3298,34 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/strategy/short-swing/settings") {
+  if (req.method === "GET" && url.pathname === "/api/signals/auto-trade") {
     const admin = requireAuth(req, res, "admin");
     if (!admin) {
       return true;
     }
 
-    sendJson(res, 200, {
-      settings: getShortSwingSettings(),
+    sendJson(res, 200, getSignalAutoTradeSettingsSnapshot());
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/signals/auto-trade") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+
+    const body = await readBody(req);
+    const nextConfig = normalizeSignalAutoTradeConfig({
+      enabled: parseBooleanFlag(body.enabled, autoTradeService.getConfig().enabled),
     });
-    return true;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/strategy/short-swing/settings") {
-    const admin = requireAuth(req, res, "admin");
-    if (!admin) {
-      return true;
-    }
-
-    try {
-      const body = await readBody(req);
-      const settings = setShortSwingSettings(body || {});
-      sendJson(res, 200, {
-        settings,
-      });
-    } catch (error) {
-      sendJson(res, 400, { error: error.message || "Strategy settings could not be saved." });
-    }
-    return true;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/strategy/quality-ema/settings") {
-    const admin = requireAuth(req, res, "admin");
-    if (!admin) {
-      return true;
-    }
-
-    sendJson(res, 200, {
-      settings: getQualityEmaSettings(),
-    });
-    return true;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/strategy/quality-ema/settings") {
-    const admin = requireAuth(req, res, "admin");
-    if (!admin) {
-      return true;
-    }
-
-    try {
-      const body = await readBody(req);
-      const settings = setQualityEmaSettings(body || {});
-      sendJson(res, 200, {
-        settings,
-      });
-    } catch (error) {
-      sendJson(res, 400, { error: error.message || "Quality EMA strategy settings could not be saved." });
-    }
-    return true;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/strategy/short-swing/debug") {
-    const admin = requireAuth(req, res, "admin");
-    if (!admin) {
-      return true;
-    }
-
-    try {
-      const debug = await signalEngine.getStrategyDebugSnapshot();
-      const strategyTrades = (db.tradeIntents || [])
-        .filter((trade) => isShortSwingTrade(trade))
-        .slice(0, 12)
-        .map((trade) => serializeTradeForAdmin(trade));
-      const strategyLogs = (db.strategyLogs || []).slice(0, 30);
-
-      sendJson(res, 200, {
-        ...debug,
-        logs: strategyLogs,
-        trades: strategyTrades,
-      });
-    } catch (error) {
-      sendJson(res, 500, { error: error.message || "Strategy debug data could not be loaded." });
-    }
+    autoTradeService.updateConfig(nextConfig);
+    db.meta = {
+      ...(db.meta || {}),
+      signalAutoTrade: autoTradeService.getConfig(),
+    };
+    persist();
+    scheduleSettingsUsersBroadcast("signal_auto_trade_updated");
+    sendJson(res, 200, getSignalAutoTradeSettingsSnapshot());
     return true;
   }
 
@@ -4490,6 +4124,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+socketSignalService.attach(server, {
+  authorize: (request) => {
+    const session = getSession(request);
+    if (!session || !db) {
+      return null;
+    }
+    return db.users.find((item) => item.id === session.userId) || null;
+  },
+  snapshotProvider: () => signalController.getSnapshot(),
+});
+
 const settingsUsersWss = new WebSocketServer({ noServer: true });
 const settingsUsersClients = new Set();
 
@@ -4576,7 +4221,6 @@ settingsUsersWss.on("connection", (socket, request, auth = {}) => {
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname !== SETTINGS_USERS_WS_PATH) {
-    socket.destroy();
     return;
   }
 
@@ -4598,37 +4242,20 @@ server.on("upgrade", (req, socket, head) => {
 async function startServer() {
   db = await loadDb();
   ensureAdminUser(db);
+  autoTradeService.updateConfig(normalizeSignalAutoTradeConfig(db.meta?.signalAutoTrade || {}));
   await tradeLearningService.init();
-  signalEngine.setStrategySettings({
-    shortSwing: getShortSwingSettings(),
-    qualityEma: getQualityEmaSettings(),
+  await signalEngine.setTimeframe(db.meta?.signalTimeframe, { scan: false }).catch(async () => {
+    await signalEngine.setTimeframe("15m", { scan: false });
   });
-  await signalEngine.setTimeframe(db.meta?.signalTimeframe).catch(async () => {
-    await signalEngine.setTimeframe("15m");
-  });
-  signalEngine.hydrateSignals(db.signals || []);
-  sweepExpiredSignals();
-  db.signals = signalEngine.getStoredSignals();
+  await signalEngine.hydrateSignals(db.signals || []);
+  await sweepExpiredSignals();
   db.meta = {
     ...(db.meta || {}),
     signalTimeframe: signalEngine.getTimeframe(),
+    signalAutoTrade: autoTradeService.getConfig(),
   };
   await saveDb(db);
   await syncTradeLearningHistory();
-  console.log(`Telegram signal bot diagnostics: ${JSON.stringify(getSignalBotDiagnostics())}`);
-  await ensureTradeListenerRunning(true);
-  await ensureSignalEngineRunning(true);
-  void startTradeReconciliation(true);
-  setInterval(() => {
-    void startTradeReconciliation();
-  }, TRADE_RECONCILE_BACKGROUND_INTERVAL_MS);
-  setInterval(() => {
-    void ensureTradeListenerRunning();
-    void ensureSignalEngineRunning();
-  }, SERVICE_RETRY_INTERVAL_MS);
-  setInterval(() => {
-    sweepExpiredSignals();
-  }, SIGNAL_EXPIRY_SWEEP_MS);
 
   const listeningPort = await listenOnAvailablePort(server, port);
   const storageMode = shouldUseMongo() ? "MongoDB" : "local JSON file";
@@ -4638,6 +4265,21 @@ async function startServer() {
   }
 
   console.log(`Trade MVP running on http://localhost:${listeningPort} using ${storageMode} storage`);
+  console.log(`Telegram signal bot diagnostics: ${JSON.stringify(getSignalBotDiagnostics())}`);
+
+  void ensureTradeListenerRunning(true);
+  void ensureSignalEngineRunning(true, { awaitInitialScan: false });
+  void startTradeReconciliation(true);
+  setInterval(() => {
+    void startTradeReconciliation();
+  }, TRADE_RECONCILE_BACKGROUND_INTERVAL_MS);
+  setInterval(() => {
+    void ensureTradeListenerRunning();
+    void ensureSignalEngineRunning();
+  }, SERVICE_RETRY_INTERVAL_MS);
+  setInterval(() => {
+    void sweepExpiredSignals();
+  }, SIGNAL_EXPIRY_SWEEP_MS);
 }
 
 function listenOnce(targetServer, targetPort) {

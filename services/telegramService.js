@@ -1,6 +1,7 @@
 const TelegramBot = require("node-telegram-bot-api");
 
 const { disableBrokenLocalProxyEnv } = require("../lib/network");
+const { getEnvValue, normalizeEnvValue } = require("../lib/env");
 const { defaultPreferences } = require("../models/subscriberModel");
 
 function maskToken(token = "") {
@@ -38,8 +39,8 @@ function withTimeout(promise, label, timeoutMs = 6000) {
 }
 
 class TelegramService {
-  constructor({ token = process.env.TELEGRAM_TRADE_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN, subscriberModel, logger = console } = {}) {
-    this.token = String(token || "").trim();
+  constructor({ token = getEnvValue("TELEGRAM_TRADE_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"), subscriberModel, logger = console } = {}) {
+    this.token = normalizeEnvValue(token);
     this.subscriberModel = subscriberModel;
     this.logger = logger;
     this.bot = null;
