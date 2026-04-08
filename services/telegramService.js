@@ -38,6 +38,24 @@ function withTimeout(promise, label, timeoutMs = 6000) {
   });
 }
 
+function isTrue(value) {
+  return normalizeEnvValue(value).toLowerCase() === "true";
+}
+
+function isFalse(value) {
+  return normalizeEnvValue(value).toLowerCase() === "false";
+}
+
+function shouldEnableTradeBotPolling() {
+  const explicit = getEnvValue("TELEGRAM_TRADE_BOT_POLLING_ENABLED");
+  if (explicit) {
+    return isTrue(explicit);
+  }
+
+  const runningOnRender = !!getEnvValue("RENDER", "RENDER_EXTERNAL_URL");
+  return !runningOnRender;
+}
+
 class TelegramService {
   constructor({ token = getEnvValue("TELEGRAM_TRADE_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"), subscriberModel, logger = console } = {}) {
     this.token = normalizeEnvValue(token);
@@ -47,6 +65,7 @@ class TelegramService {
     this.started = false;
     this.pollingRestartTimer = null;
     this.lastPollingError = null;
+    this.pollingEnabled = shouldEnableTradeBotPolling();
   }
 
   isEnabled() {
@@ -58,6 +77,10 @@ class TelegramService {
       return false;
     }
 
+    if (!this.pollingEnabled) {
+      return true;
+    }
+
     return typeof this.bot.isPolling === "function" ? this.bot.isPolling() : true;
   }
 
@@ -66,6 +89,7 @@ class TelegramService {
       tokenLoaded: !!this.token,
       tokenPreview: maskToken(this.token),
       started: this.started,
+      pollingEnabled: this.pollingEnabled,
       polling: !!this.bot,
       pollingActive: this.isHealthy(),
       webhook: false,
@@ -122,7 +146,11 @@ class TelegramService {
       this.logger.log("Telegram bot started");
     }
 
-    await this.ensurePolling();
+    if (this.pollingEnabled) {
+      await this.ensurePolling();
+    } else {
+      this.logger.log("Telegram trade bot polling is disabled for this instance. Outgoing notifications remain enabled.");
+    }
     this.started = true;
     return this;
   }
@@ -145,6 +173,10 @@ class TelegramService {
       throw new Error("Telegram bot is not initialized.");
     }
 
+    if (!this.pollingEnabled) {
+      return;
+    }
+
     if (typeof this.bot.isPolling === "function" && this.bot.isPolling()) {
       return;
     }
@@ -162,6 +194,10 @@ class TelegramService {
   }
 
   schedulePollingRestart(reason, error = null) {
+    if (!this.pollingEnabled) {
+      return;
+    }
+
     if (error) {
       this.lastPollingError = {
         message: error.message || String(error),
@@ -237,7 +273,19 @@ class TelegramService {
     });
 
     this.bot.on("polling_error", (error) => {
-      this.logger.error("Telegram bot polling error:", error.message || error);
+      const message = String(error?.message || error || "");
+      this.logger.error("Telegram bot polling error:", message);
+      if (message.includes("409 Conflict")) {
+        this.lastPollingError = {
+          message,
+          at: new Date().toISOString(),
+          reason: "polling_conflict",
+        };
+        this.pollingEnabled = false;
+        void this.bot.stopPolling().catch(() => {});
+        this.logger.warn("Telegram trade bot polling disabled after a 409 conflict. Outgoing notifications are still available.");
+        return;
+      }
       this.schedulePollingRestart("polling_error", error);
     });
 
