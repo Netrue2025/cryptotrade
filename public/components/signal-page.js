@@ -70,7 +70,7 @@
                 .join("")}
             </div>
             <button id="signal-alert-enable-btn" class="button-secondary signal-alert-btn" type="button">
-              ${signalFeed?.audioUnlocked ? "Alerts armed" : "Enable alerts"}
+              ${signalFeed?.audioEnabled ? "Sound on" : "Sound off"}
             </button>
           </div>
         </section>

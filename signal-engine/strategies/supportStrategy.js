@@ -5,7 +5,7 @@ const {
   getLowerWick,
   normalizeCandles,
   toNumber,
-} = require("../utils/candleMath");
+} = require("./helpers");
 
 const STRATEGY = "SUPPORT";
 
@@ -63,7 +63,7 @@ function evaluateSupportStrategy({ symbol, timeframe, candles = [] }) {
   const entry = toNumber(lastCandle.close);
   const stopLoss = Number((supportCandidate.level - (recentRange * 0.35)).toFixed(6));
   const takeProfit = Number((entry + ((entry - stopLoss) * 1.8)).toFixed(6));
-  const confidence = Math.min(0.85, 0.58 + (supportCandidate.touches * 0.015) + (lowerWick / Math.max(body || 1, 1) * 0.02));
+  const confidence = Math.min(0.85, 0.58 + (supportCandidate.touches * 0.015) + ((lowerWick / Math.max(body || 1, 1)) * 0.02));
 
   return {
     matched: true,

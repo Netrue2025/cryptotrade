@@ -40,7 +40,6 @@ const { createSignalConfig } = require("./src/config/signalConfig");
 const { SIGNAL_EVENTS, signalBus } = require("./src/events/signalBus");
 const { createLogger } = require("./src/utils/logger");
 const { SignalModel } = require("./src/models/Signal");
-const { TradeLearning: SignalTradeLearning } = require("./src/ml/tradeLearning");
 const { MarketDataService } = require("./src/services/marketDataService");
 const { SignalTelegramService } = require("./src/services/telegramService");
 const { AutoTradeService } = require("./src/services/autoTradeService");
@@ -82,6 +81,7 @@ const SIGNAL_AUTO_TRADE_DEFAULT_FIRST_BALANCE_PERCENT = 50;
 const SIGNAL_AUTO_TRADE_DEFAULT_SECOND_BALANCE_PERCENT = 100;
 const SIGNAL_AUTO_TRADE_DEFAULT_MAX_SIMULTANEOUS_TRADES = 2;
 const SIGNAL_AUTO_TRADE_STRATEGY_TYPE = "SIGNAL_AUTO";
+const SIGNAL_INGEST_SECRET = String(getEnvValue("SIGNAL_INGEST_SECRET") || "").trim();
 
 let db = null;
 const tradeLearningService = new TradeLearningService();
@@ -97,10 +97,6 @@ const signalConfig = createSignalConfig();
 const signalLogger = createLogger("signals");
 const signalModel = new SignalModel({
   collectionName: signalConfig.storage.signalCollection,
-  logger: signalLogger,
-});
-const signalTradeLearning = new SignalTradeLearning({
-  collectionName: signalConfig.storage.learningCollection,
   logger: signalLogger,
 });
 const marketDataService = new MarketDataService({
@@ -124,7 +120,6 @@ const signalEngine = new SignalEngine({
   eventBus: signalBus,
   telegramService: signalTelegramService,
   autoTradeService,
-  tradeLearning: signalTradeLearning,
   logger: signalLogger,
 });
 const signalController = new SignalController({
@@ -174,6 +169,24 @@ async function sendTelegramText(text) {
 
   await signalTelegramService.sendWithRetry(signalConfig.telegram.chatId, String(text || "").trim() || "Signal bot test");
   return { ok: true };
+}
+
+function isAuthorizedSignalIngestRequest(req) {
+  if (!SIGNAL_INGEST_SECRET) {
+    return true;
+  }
+
+  const headerSecret = String(req.headers["x-signal-secret"] || "").trim();
+  if (headerSecret && headerSecret === SIGNAL_INGEST_SECRET) {
+    return true;
+  }
+
+  const authorizationHeader = String(req.headers.authorization || "").trim();
+  if (authorizationHeader.toLowerCase().startsWith("bearer ")) {
+    return authorizationHeader.slice(7).trim() === SIGNAL_INGEST_SECRET;
+  }
+
+  return false;
 }
 
 function persist() {
@@ -312,11 +325,11 @@ async function ensureSignalEngineRunning(force = false, options = {}) {
 
   signalEngineStartPromise = signalEngine.start(options)
     .then(() => {
-      console.log(`Signal engine is running on ${signalEngine.getTimeframe()}.`);
+      console.log(`Signal receiver is ready on ${signalEngine.getTimeframe()}.`);
       return true;
     })
     .catch((error) => {
-      console.error("Signal engine startup failed:", error.message);
+      console.error("Signal receiver startup failed:", error.message);
       return false;
     })
     .finally(() => {
@@ -3153,6 +3166,29 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/signals") {
+    if (!isAuthorizedSignalIngestRequest(req)) {
+      sendJson(res, 401, { error: "Unauthorized signal ingest request." });
+      return true;
+    }
+
+    const body = await readBody(req);
+    try {
+      const result = await signalController.receiveSignal(body);
+      persistSignalState();
+      sendJson(res, result.created ? 201 : 200, {
+        ok: true,
+        created: result.created,
+        signal: result.signal,
+      });
+    } catch (error) {
+      sendJson(res, 400, {
+        error: error.message || "Signal payload could not be processed.",
+      });
+    }
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/signals") {
     const user = requireAuth(req, res);
     if (!user) {
@@ -4276,7 +4312,6 @@ async function startServer() {
   }, TRADE_RECONCILE_BACKGROUND_INTERVAL_MS);
   setInterval(() => {
     void ensureTradeListenerRunning();
-    void ensureSignalEngineRunning();
   }, SERVICE_RETRY_INTERVAL_MS);
   setInterval(() => {
     void sweepExpiredSignals();

@@ -20,6 +20,10 @@ class SignalController {
   async updateTimeframe(timeframe) {
     return this.signalEngine.setTimeframe(timeframe);
   }
+
+  async receiveSignal(payload) {
+    return this.signalEngine.receiveSignal(payload);
+  }
 }
 
 module.exports = {

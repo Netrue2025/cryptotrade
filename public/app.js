@@ -15,6 +15,7 @@ const EXCHANGE_OPTIONS = [
 const WATCHLIST_REFRESH_INTERVAL_MS = 30000;
 const TRADE_REFRESH_INTERVAL_MS = 30000;
 const SIGNAL_CHART_REFRESH_INTERVAL_MS = 5000;
+const SIGNAL_AUDIO_ENABLED_STORAGE_KEY = "tradeflow-signal-audio-enabled";
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
 const STABLECOIN_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD"];
 const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
@@ -129,7 +130,8 @@ const state = {
     streamConnected: false,
     statusMessage: "Connecting to the live signal engine...",
     notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-    audioUnlocked: true,
+    audioEnabled: localStorage.getItem(SIGNAL_AUDIO_ENABLED_STORAGE_KEY) !== "false",
+    audioUnlocked: false,
     selectedIds: [],
     deleting: false,
     switchingTimeframe: false,
@@ -143,6 +145,7 @@ let watchlistRefreshPromise = null;
 let tradeRefreshPromise = null;
 let signalChartRefreshTimer = null;
 let signalAlertAudio = null;
+let signalAudioUnlockHandler = null;
 const seenSignalIds = new Set();
 
 function normalizeUserPayload(user) {
@@ -198,6 +201,39 @@ function getSignalAlertAudio() {
     signalAlertAudio.preload = "auto";
   }
   return signalAlertAudio;
+}
+
+function persistSignalAudioEnabled() {
+  localStorage.setItem(SIGNAL_AUDIO_ENABLED_STORAGE_KEY, String(!!state.signalFeed.audioEnabled));
+}
+
+function clearSignalAudioAutoUnlock() {
+  if (!signalAudioUnlockHandler) {
+    return;
+  }
+
+  ["pointerdown", "keydown", "touchstart"].forEach((eventName) => {
+    window.removeEventListener(eventName, signalAudioUnlockHandler, true);
+  });
+  signalAudioUnlockHandler = null;
+}
+
+function ensureSignalAudioAutoUnlock() {
+  if (signalAudioUnlockHandler || !state.signalFeed.audioEnabled || state.signalFeed.audioUnlocked) {
+    return;
+  }
+
+  signalAudioUnlockHandler = () => {
+    if (!state.signalFeed.audioEnabled || state.signalFeed.audioUnlocked) {
+      clearSignalAudioAutoUnlock();
+      return;
+    }
+    void unlockSignalAudio({ silent: true });
+  };
+
+  ["pointerdown", "keydown", "touchstart"].forEach((eventName) => {
+    window.addEventListener(eventName, signalAudioUnlockHandler, true);
+  });
 }
 
 function updateSignalNotificationPermission() {
@@ -277,7 +313,7 @@ function patchSignalPaneDom(nextFeed) {
 
   const alertsButton = document.getElementById("signal-alert-enable-btn");
   if (alertsButton) {
-    alertsButton.textContent = nextFeed.audioUnlocked ? "Alerts armed" : "Enable alerts";
+    alertsButton.textContent = nextFeed.audioEnabled ? "Sound on" : "Sound off";
   }
 }
 
@@ -505,7 +541,12 @@ function scrollSignalListToTop() {
   });
 }
 
-async function unlockSignalAudio() {
+async function unlockSignalAudio(options = {}) {
+  const silent = !!options.silent;
+  if (!state.signalFeed.audioEnabled) {
+    return false;
+  }
+
   const audio = getSignalAlertAudio();
   audio.muted = true;
   try {
@@ -515,15 +556,31 @@ async function unlockSignalAudio() {
     audio.currentTime = 0;
     audio.muted = false;
     state.signalFeed.audioUnlocked = true;
+    clearSignalAudioAutoUnlock();
     render();
     return true;
   } catch {
     audio.muted = false;
+    if (!silent) {
+      ensureSignalAudioAutoUnlock();
+    }
     return false;
   }
 }
 
 async function enableSignalAlerts() {
+  if (state.signalFeed.audioEnabled) {
+    state.signalFeed.audioEnabled = false;
+    state.signalFeed.audioUnlocked = false;
+    persistSignalAudioEnabled();
+    clearSignalAudioAutoUnlock();
+    refreshSignalPaneDom();
+    showNotice("Signal sound muted");
+    return;
+  }
+
+  state.signalFeed.audioEnabled = true;
+  persistSignalAudioEnabled();
   updateSignalNotificationPermission();
   if (typeof Notification !== "undefined" && Notification.permission === "default") {
     try {
@@ -533,9 +590,10 @@ async function enableSignalAlerts() {
     }
   }
   updateSignalNotificationPermission();
-  await unlockSignalAudio();
+  await unlockSignalAudio({ silent: true });
+  ensureSignalAudioAutoUnlock();
   refreshSignalPaneDom();
-  showNotice("Signal alerts enabled");
+  showNotice("Signal sound enabled");
 }
 
 function announceSignal(signal) {
@@ -545,10 +603,12 @@ function announceSignal(signal) {
 
   seenSignalIds.add(signal.id);
 
-  if (state.signalFeed.audioUnlocked) {
+  if (state.signalFeed.audioEnabled && state.signalFeed.audioUnlocked) {
     const audio = getSignalAlertAudio();
     audio.currentTime = 0;
     audio.play().catch(() => {});
+  } else if (state.signalFeed.audioEnabled) {
+    ensureSignalAudioAutoUnlock();
   }
 
   if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -884,7 +944,7 @@ async function updateSignalTimeframe(timeframe) {
 
   updateSignalFeed({
     switchingTimeframe: true,
-    statusMessage: `Switching signal engine to ${nextTimeframe} candles...`,
+    statusMessage: `Switching signal dashboard to ${nextTimeframe} candles...`,
   });
 
   try {
@@ -895,7 +955,7 @@ async function updateSignalTimeframe(timeframe) {
     applySignalSnapshot(snapshot, { silent: true });
     updateSignalFeed({
       streamConnected: true,
-      statusMessage: `Signal timeframe switched to ${nextTimeframe}.`,
+      statusMessage: `Signal dashboard switched to ${nextTimeframe}.`,
     });
     if (state.actionModal?.type === "signal-chart") {
       void refreshSignalChartModal(true);
@@ -2540,6 +2600,7 @@ async function loadDashboardData() {
   }
 
   updateSignalNotificationPermission();
+  ensureSignalAudioAutoUnlock();
   connectSignalStream();
   if (state.activeTab === "settings") {
     connectSettingsUsersSocket();
@@ -4060,7 +4121,8 @@ function bindDashboardActions() {
         streamConnected: false,
         statusMessage: "Connecting to the live signal engine...",
         notificationPermission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-        audioUnlocked: true,
+        audioEnabled: localStorage.getItem(SIGNAL_AUDIO_ENABLED_STORAGE_KEY) !== "false",
+        audioUnlocked: false,
         selectedIds: [],
         deleting: false,
         switchingTimeframe: false,

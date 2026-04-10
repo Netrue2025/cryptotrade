@@ -112,6 +112,26 @@ class SignalModel {
 
     return collection.findOne({ id });
   }
+
+  async pruneExpired(now = Date.now()) {
+    const cutoffIso = new Date(Number(now || Date.now())).toISOString();
+    const collection = await this.getCollection();
+    if (!collection) {
+      const expiredSignals = [...this.memorySignals.values()].filter((signal) => String(signal?.expiresAt || "") <= cutoffIso);
+      for (const signal of expiredSignals) {
+        this.memorySignals.delete(signal.id);
+      }
+      return expiredSignals;
+    }
+
+    const expiredSignals = await collection.find({ expiresAt: { $lte: cutoffIso } }).toArray();
+    if (!expiredSignals.length) {
+      return [];
+    }
+
+    await collection.deleteMany({ id: { $in: expiredSignals.map((signal) => signal.id).filter(Boolean) } });
+    return expiredSignals;
+  }
 }
 
 module.exports = {

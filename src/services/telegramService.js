@@ -8,7 +8,10 @@ class SignalTelegramService {
     this.logger = logger;
     this.subscriberModel = subscriberModel || new SubscriberModel();
     this.queue = [];
-    this.flushing = false;
+    this.recipientCache = {
+      ids: [],
+      expiresAt: 0,
+    };
   }
 
   isEnabled() {
@@ -66,51 +69,92 @@ class SignalTelegramService {
     throw lastError;
   }
 
-  async flushQueue() {
-    if (this.flushing || !this.queue.length) {
-      return;
+  async getSubscriberRecipientIds() {
+    const now = Date.now();
+    if (this.recipientCache.expiresAt > now) {
+      return [...this.recipientCache.ids];
     }
 
-    this.flushing = true;
-    try {
-      while (this.queue.length) {
-        const task = this.queue.shift();
-        await task();
-      }
-    } finally {
-      this.flushing = false;
+    let ids = [];
+    if (this.subscriberModel?.listSubscribed) {
+      const subscribers = await this.subscriberModel.listSubscribed().catch((error) => {
+        this.logger.warn("Signal subscriber lookup failed:", error.message || error);
+        return [];
+      });
+      ids = subscribers
+        .map((subscriber) => String(subscriber?.chatId || "").trim())
+        .filter(Boolean);
     }
+
+    this.recipientCache = {
+      ids,
+      expiresAt: now + 15_000,
+    };
+    return [...ids];
   }
 
-  enqueue(task) {
-    this.queue.push(task);
-    void this.flushQueue();
+  async dispatchToRecipients(recipientIds = [], message) {
+    const ids = [...new Set(recipientIds.map((chatId) => String(chatId || "").trim()).filter(Boolean))];
+    if (!ids.length) {
+      return [];
+    }
+
+    return Promise.allSettled(ids.map((chatId) => this.sendWithRetry(chatId, message)));
   }
 
-  dispatchSignal(signal) {
+  async dispatchSignal(signal) {
     if (!this.isEnabled()) {
-      return;
+      return { dispatched: false, reason: "telegram_disabled" };
     }
 
     const message = this.formatSignalMessage(signal);
-    this.enqueue(async () => {
-      const recipientIds = new Set();
-      if (this.config.telegram.chatId) {
-        recipientIds.add(this.config.telegram.chatId);
-      }
+    const primaryRecipientId = String(this.config.telegram.chatId || "").trim();
+    const startedAt = Date.now();
 
-      if (this.subscriberModel?.listSubscribed) {
-        const subscribers = await this.subscriberModel.listSubscribed().catch(() => []);
-        for (const subscriber of subscribers) {
-          recipientIds.add(String(subscriber.chatId));
-        }
-      }
+    const primaryDispatch = primaryRecipientId
+      ? this.sendWithRetry(primaryRecipientId, message)
+          .then(() => {
+            this.logger.info(`Primary signal Telegram delivery completed for ${signal.symbol} in ${Date.now() - startedAt}ms.`);
+          })
+          .catch((error) => {
+            this.logger.error(`Primary signal Telegram delivery failed for ${signal.symbol}:`, error.message || error);
+          })
+      : Promise.resolve();
 
-      await Promise.allSettled(
-        [...recipientIds].map((chatId) => this.sendWithRetry(chatId, message))
-      );
-    });
+    const subscriberDispatch = this.getSubscriberRecipientIds()
+      .then((subscriberIds) => subscriberIds.filter((chatId) => chatId !== primaryRecipientId))
+      .then((subscriberIds) => this.dispatchToRecipients(subscriberIds, message))
+      .catch((error) => {
+        this.logger.error(`Signal subscriber fanout failed for ${signal.symbol}:`, error.message || error);
+        return [];
+      });
+
+    const [primaryResult, subscriberResults] = await Promise.all([primaryDispatch, subscriberDispatch]);
+
+    return {
+      dispatched: true,
+      primaryRecipientId,
+      subscriberCount: Array.isArray(subscriberResults) ? subscriberResults.length : 0,
+      primaryResult,
+    };
   }
+
+  invalidateRecipientCache() {
+    this.recipientCache = {
+      ids: [],
+      expiresAt: 0,
+    };
+  }
+
+  enqueue() {
+    // Kept only for backward compatibility with any external callers.
+    this.logger.warn("SignalTelegramService.enqueue is deprecated. dispatchSignal now sends immediately.");
+  }
+
+  async flushQueue() {
+    return;
+  }
+
 }
 
 module.exports = {

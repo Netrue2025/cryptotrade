@@ -4,7 +4,7 @@ const {
   normalizeCandles,
   standardDeviation,
   toNumber,
-} = require("../utils/candleMath");
+} = require("./helpers");
 
 const STRATEGY = "BREAKOUT";
 

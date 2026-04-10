@@ -4,7 +4,7 @@ const {
   lastDefined,
   normalizeCandles,
   toNumber,
-} = require("../utils/candleMath");
+} = require("./helpers");
 
 const STRATEGY = "EMA_RSI";
 
