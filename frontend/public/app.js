@@ -563,6 +563,43 @@ function formatCurrencyAmount(value, currency = "USDT") {
   return String(currency || "USDT").toUpperCase() === "NGN" ? formatNaira(value) : formatUsdtUnit(value);
 }
 
+function getUsdtToNgnRate() {
+  return Number(
+    state.financialDashboard?.settings?.exchangeRate?.usdtToNgn ||
+      state.financialDashboard?.totalBalance?.usdtToNgnRate ||
+      state.usdtNgnRate ||
+      0
+  );
+}
+
+function getEquivalentAmount(value, currency = "USDT") {
+  const amount = Number(value || 0);
+  const rate = getUsdtToNgnRate();
+  const normalizedCurrency = String(currency || "USDT").toUpperCase();
+  if (!amount || !rate) {
+    return null;
+  }
+  return normalizedCurrency === "NGN"
+    ? { currency: "USDT", amount: amount / rate }
+    : { currency: "NGN", amount: amount * rate };
+}
+
+function formatEquivalentAmount(value, currency = "USDT") {
+  const equivalent = getEquivalentAmount(value, currency);
+  return equivalent ? formatCurrencyAmount(equivalent.amount, equivalent.currency) : "";
+}
+
+function formatRecordEquivalent(record, currency = "USDT") {
+  const sourceCurrency = String(currency || record?.currency || "USDT").toUpperCase();
+  const displayAmounts = record?.displayAmounts || record?.metadata?.displayAmounts || null;
+  const targetCurrency = sourceCurrency === "NGN" ? "USDT" : "NGN";
+  const targetAmount = displayAmounts?.[targetCurrency];
+  if (targetAmount !== undefined && targetAmount !== null && targetAmount !== "") {
+    return formatCurrencyAmount(targetAmount, targetCurrency);
+  }
+  return formatEquivalentAmount(record?.amount || 0, sourceCurrency);
+}
+
 function getSignalById(signalId) {
   return (state.signalFeed.signals || []).find((signal) => signal.id === signalId) || null;
 }
@@ -1307,7 +1344,7 @@ function getInvestmentBalanceNgn() {
 }
 
 function getInvestmentDailyReturnNgn() {
-  return Number(state.financialDashboard?.performance?.todayUsdt || 0) * Number(state.financialDashboard?.totalBalance?.usdtToNgnRate || 0);
+  return Number(state.financialDashboard?.performance?.todayUsdt || 0) * getUsdtToNgnRate();
 }
 
 function getFinancialSettings() {
@@ -1822,11 +1859,11 @@ function renderDashboardTopBar() {
                   .slice(0, 8)
                   .map(
                     (item) => `
-                      <div class="notification-item">
+                      <button class="notification-item ${item.readAt ? "read" : ""}" data-notification-open="${escapeHtml(item.id)}" type="button">
                         <strong>${escapeHtml(item.title || item.type || "Update")}</strong>
                         <p>${escapeHtml(item.message || "")}</p>
                         <span class="notification-time">${item.createdAt ? new Date(item.createdAt).toLocaleString() : ""}</span>
-                      </div>
+                      </button>
                     `
                   )
                   .join("") || `<p class="muted-copy">No notifications.</p>`}
@@ -1920,6 +1957,7 @@ function renderActionModal() {
           <span>Amount (Naira)</span>
           <input id="wallet-amount-input" type="number" min="0" step="1" placeholder="Enter amount" />
         </label>
+        <p class="wallet-equivalent-preview" id="wallet-equivalent-preview">Equivalent: --</p>
         <label class="stack-label">
           <span>Sender name</span>
           <input id="wallet-sender-input" type="text" placeholder="Name on payment" value="${escapeHtml(state.user?.name || "")}" />
@@ -1935,6 +1973,7 @@ function renderActionModal() {
             <span>Amount (USDT)</span>
             <input id="wallet-amount-input" type="number" min="0" step="0.00000001" placeholder="Enter amount" />
           </label>
+          <p class="wallet-equivalent-preview" id="wallet-equivalent-preview">Equivalent: --</p>
           <div class="wallet-instructions">
             <span>Send to</span>
             <code>${escapeHtml(depositSettings.usdtAddress || "Deposit address not configured")}</code>
@@ -1953,6 +1992,7 @@ function renderActionModal() {
           <span>Amount (Naira)</span>
           <input id="wallet-amount-input" type="number" min="0" step="1" placeholder="Enter amount" />
         </label>
+        <p class="wallet-equivalent-preview" id="wallet-equivalent-preview">Equivalent: --</p>
         <label class="stack-label">
           <span>Bank</span>
           <input id="wallet-bank-input" type="text" placeholder="Bank name" />
@@ -1972,13 +2012,14 @@ function renderActionModal() {
             <span>Amount (USDT)</span>
             <input id="wallet-amount-input" type="number" min="0" step="0.00000001" placeholder="Enter amount" />
           </label>
+          <p class="wallet-equivalent-preview" id="wallet-equivalent-preview">Equivalent: --</p>
           <label class="stack-label">
             <span>Wallet address</span>
             <input id="wallet-address-input" type="text" placeholder="USDT address" />
           </label>
           <label class="stack-label">
             <span>Network</span>
-            <input id="wallet-network-input" type="text" placeholder="TRC20" />
+            <input id="wallet-network-input" type="text" placeholder="TRC20" value="${escapeHtml(depositSettings.usdtNetwork || "TRC20")}" />
           </label>
         `
         : "";
@@ -3319,6 +3360,9 @@ async function submitAdminDepositSettings(form) {
           usdtAddress: data.usdtAddress || "",
           usdtNetwork: data.usdtNetwork || "TRC20",
         },
+        exchangeRate: {
+          usdtToNgn: data.usdtToNgn || getUsdtToNgnRate(),
+        },
       }),
     });
     state.financialDashboard = {
@@ -3406,6 +3450,63 @@ function toggleFinanceHistorySelection(kind, id, selected) {
   render();
 }
 
+function updateWalletEquivalentPreview(amountInput, currency) {
+  const preview = document.getElementById("wallet-equivalent-preview");
+  if (!preview) {
+    return;
+  }
+  const equivalent = formatEquivalentAmount(amountInput?.value || 0, currency);
+  preview.textContent = equivalent ? `Equivalent: ${equivalent}` : "Equivalent: --";
+}
+
+function getNotificationTarget(notification) {
+  const type = String(notification?.type || "").toUpperCase();
+  const entityType = String(notification?.entityType || "").toUpperCase();
+  if (state.user?.role === "admin" && ["DEPOSIT", "WITHDRAWAL"].includes(entityType || type)) {
+    return { tab: "settings", section: "finance" };
+  }
+  if (type === "MESSAGE") {
+    return { tab: "settings", section: "support" };
+  }
+  return { tab: "home", section: "wallet" };
+}
+
+async function openNotification(notificationId) {
+  const notification = (state.notifications || []).find((item) => item.id === notificationId);
+  if (!notification) {
+    return;
+  }
+  const target = getNotificationTarget(notification);
+  try {
+    const payload = await api(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.notifications = state.notifications.map((item) =>
+      item.id === notificationId
+        ? { ...item, readAt: payload.notification?.readAt || new Date().toISOString() }
+        : item
+    );
+  } catch (error) {
+    showError(error.message);
+    return;
+  }
+  state.showNotifications = false;
+  state.activeTab = target.tab;
+  if (target.tab === "settings") {
+    connectSettingsUsersSocket();
+  } else {
+    disconnectSettingsUsersSocket();
+  }
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-section="${target.section}"]`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+}
+
 async function deleteSelectedFinanceHistory() {
   const selected = state.selectedFinanceHistoryIds;
   if (!selected.length) {
@@ -3486,8 +3587,11 @@ function renderSummaryCard() {
   const lockedUsdt = Number(usdtWallet?.lockedBalance || 0);
   const ledgerNgn = Number(ngnWallet?.availableBalance || 0);
   const lockedNgn = Number(ngnWallet?.lockedBalance || 0);
-  const configuredRate = Number(state.financialDashboard?.totalBalance?.usdtToNgnRate || state.usdtNgnRate || 0);
-  const investmentNgn = ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0);
+  const configuredRate = getUsdtToNgnRate();
+  const investmentNgn = Number(state.financialDashboard?.totalBalance?.ngnEquivalent || ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0));
+  const investmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
+  const lockedNgnEquivalent = Number(state.financialDashboard?.totalBalance?.lockedNgnEquivalent || lockedNgn + (configuredRate ? lockedUsdt * configuredRate : 0));
+  const lockedUsdtEquivalent = Number(state.financialDashboard?.totalBalance?.lockedUsdt || lockedUsdt + (configuredRate ? lockedNgn / configuredRate : 0));
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const todayValue = isFuturesMode()
@@ -3515,7 +3619,7 @@ function renderSummaryCard() {
     const adminBalanceNgn = Number(state.totalNgn || (configuredRate ? portfolioBalance * configuredRate : 0));
     const adminPnlNgn = configuredRate ? todayValue * configuredRate : 0;
     return `
-      <section class="balance-carousel">
+      <section class="balance-carousel" data-section="wallet">
         <article class="summary-hero balance-slide fintech-card">
           ${state.loadingFinancial || accountLoading ? renderSectionLoadingOverlay("Loading wallet", `Syncing ${exchangeLabel}`) : ""}
           <div class="fintech-card-pattern" aria-hidden="true"></div>
@@ -3543,7 +3647,7 @@ function renderSummaryCard() {
   }
 
   return `
-      <section class="balance-carousel">
+      <section class="balance-carousel" data-section="wallet">
         <article class="summary-hero balance-slide fintech-card">
           ${state.loadingFinancial ? renderSectionLoadingOverlay("Loading investment view", "Pulling your ledger wallet") : ""}
           <div class="fintech-card-pattern" aria-hidden="true"></div>
@@ -3553,13 +3657,13 @@ function renderSummaryCard() {
           </div>
           <h2>${investmentNgn > 0 ? formatNaira(investmentNgn) : "--"}</h2>
           <div class="fintech-balance-row">
-            <span>${formatUsdtUnit(ledgerUsdt)}</span>
-            <span>${formatNaira(ledgerNgn)}</span>
+            <span>${formatUsdtUnit(investmentUsdt)}</span>
+            <span>${formatNaira(investmentNgn)}</span>
           </div>
           <p class="muted-bright">
             P&L <span class="${userPnlTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))} ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
           </p>
-          <p class="muted-bright">Locked ${formatUsdtUnit(lockedUsdt)} | ${formatNaira(lockedNgn)}</p>
+          <p class="muted-bright">Locked ${formatUsdtUnit(lockedUsdtEquivalent)} | ${formatNaira(lockedNgnEquivalent)}</p>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">${icon("bank")} Deposit</button>
             <button class="hero-action-btn ghost" id="netrue-withdraw-btn" type="button">${icon("download")} Withdraw</button>
@@ -4485,6 +4589,7 @@ function renderCurrentUserWalletSummary() {
 function renderAdminDepositCard(deposit) {
   const currency = deposit.currency || "USDT";
   const reference = deposit.transactionHash || deposit.bankReference || "";
+  const equivalent = formatRecordEquivalent(deposit, currency);
   const historyKey = financeHistoryKey("deposit", deposit.id);
   return `
     <div class="asset-card admin-finance-card">
@@ -4498,6 +4603,7 @@ function renderAdminDepositCard(deposit) {
         <strong>${escapeHtml(deposit.user?.name || "Unknown user")}</strong>
         <p class="muted-copy">${escapeHtml(deposit.user?.email || "")}</p>
         <p class="muted-copy">${formatCurrencyAmount(deposit.amount, currency)}${deposit.network ? ` | ${escapeHtml(deposit.network)}` : ""}</p>
+        ${equivalent ? `<p class="muted-copy">Eq ${equivalent}</p>` : ""}
         <p class="muted-copy">Ref: ${escapeHtml(reference || "Not provided")}</p>
       </div>
       <div class="asset-values">
@@ -4526,6 +4632,7 @@ function renderAdminWithdrawalCard(withdrawal) {
   const fundingCopy = (withdrawal.fundingSources || [])
     .map((source) => formatCurrencyAmount(source.amount, source.currency))
     .join(" + ");
+  const equivalent = formatRecordEquivalent(withdrawal, withdrawal.currency);
   const historyKey = financeHistoryKey("withdrawal", withdrawal.id);
   const canProcess = withdrawal.status === "PENDING";
   const canFinalize = ["PENDING", "PROCESSING"].includes(withdrawal.status);
@@ -4541,6 +4648,7 @@ function renderAdminWithdrawalCard(withdrawal) {
         <strong>${escapeHtml(withdrawal.user?.name || "Unknown user")}</strong>
         <p class="muted-copy">${escapeHtml(withdrawal.user?.email || "")}</p>
         <p class="muted-copy">${withdrawal.currency === "NGN" ? formatNaira(withdrawal.amount) : formatUsdtUnit(withdrawal.amount)}</p>
+        ${equivalent ? `<p class="muted-copy">Eq ${equivalent}</p>` : ""}
         ${fundingCopy ? `<p class="muted-copy">From ${fundingCopy}</p>` : ""}
         <p class="muted-copy">${escapeHtml(destinationCopy || "Destination unavailable")}</p>
       </div>
@@ -4565,6 +4673,7 @@ function renderAdminWithdrawalCard(withdrawal) {
 
 function renderAdminTransactionCard(transaction) {
   const historyKey = financeHistoryKey("transaction", transaction.id);
+  const equivalent = formatRecordEquivalent(transaction, transaction.currency);
   return `
     <div class="asset-card admin-finance-card">
       <label class="history-checkbox finance-history-checkbox" aria-label="Select transaction">
@@ -4576,6 +4685,7 @@ function renderAdminTransactionCard(transaction) {
       <div>
         <strong>${escapeHtml(transaction.user?.name || "Unknown user")}</strong>
         <p class="muted-copy">${escapeHtml(transaction.type || "Transaction")} | ${escapeHtml(transaction.status || "")}</p>
+        ${equivalent ? `<p class="muted-copy">Eq ${equivalent}</p>` : ""}
         <p class="muted-copy">${escapeHtml(transaction.description || transaction.reference || "")}</p>
       </div>
       <div class="asset-values">
@@ -4594,7 +4704,7 @@ function renderAdminFinancePanel() {
   const selectedCount = state.selectedFinanceHistoryIds.length;
   const allSelected = !!historyKeys.length && selectedCount === historyKeys.length;
   return `
-    <section class="mobile-card${loadingClass(state.loadingAdminFinance)}">
+    <section class="mobile-card${loadingClass(state.loadingAdminFinance)}" data-section="finance">
       ${state.loadingAdminFinance ? renderSectionLoadingOverlay("Loading finance queue", "Checking pending deposits and withdrawals") : ""}
       <div class="section-head">
         <div>
@@ -4637,6 +4747,7 @@ function renderSettingsPane() {
   const signalAutoTradeRuntime = signalAutoTrade.runtime || {};
   const financeSettings = getFinancialSettings();
   const depositSettings = financeSettings.deposit || {};
+  const exchangeRateSettings = financeSettings.exchangeRate || {};
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -4725,7 +4836,8 @@ function renderSettingsPane() {
                 <label>Bank note <textarea name="bankNote" rows="2" placeholder="Short note">${escapeHtml(depositSettings.bankNote || "")}</textarea></label>
                 <label>USDT address <input name="usdtAddress" value="${escapeHtml(depositSettings.usdtAddress || "")}" placeholder="Wallet address" /></label>
                 <label>USDT network <input name="usdtNetwork" value="${escapeHtml(depositSettings.usdtNetwork || "TRC20")}" placeholder="TRC20" /></label>
-                <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save accounts</button>
+                <label>USDT to Naira <input name="usdtToNgn" type="number" min="1" step="0.01" value="${escapeHtml(exchangeRateSettings.usdtToNgn || getUsdtToNgnRate() || "")}" placeholder="1600" /></label>
+                <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save</button>
               </form>
             </section>
             <section class="mobile-card">
@@ -4771,7 +4883,7 @@ function renderSettingsPane() {
           }
         </div>
       </section>
-      <section class="mobile-card">
+      <section class="mobile-card" data-section="support">
         <div class="section-head">
           <div>
             <h3>Support</h3>
@@ -5039,6 +5151,12 @@ function bindDashboardActions() {
     });
   }
 
+  document.querySelectorAll("[data-notification-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openNotification(button.dataset.notificationOpen);
+    });
+  });
+
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
     const exchangeSelect = exchangeSelectForm.querySelector('select[name="exchange"]');
@@ -5221,13 +5339,46 @@ function bindDashboardActions() {
 
   const walletSubmitButton = document.getElementById("wallet-submit-btn");
   if (walletSubmitButton) {
+    const amountInput = document.getElementById("wallet-amount-input");
+    updateWalletEquivalentPreview(amountInput, walletSubmitButton.dataset.walletCurrencySelected || state.actionModal?.currency || "USDT");
+    if (amountInput) {
+      amountInput.addEventListener("input", () => {
+        updateWalletEquivalentPreview(amountInput, walletSubmitButton.dataset.walletCurrencySelected || state.actionModal?.currency || "USDT");
+      });
+    }
     walletSubmitButton.addEventListener("click", async () => {
       const mode = walletSubmitButton.dataset.walletMode || "deposit";
       const currency = walletSubmitButton.dataset.walletCurrencySelected || state.actionModal?.currency || "USDT";
-      const amount = document.getElementById("wallet-amount-input")?.value?.trim();
+      const amount = amountInput?.value?.trim();
+      const depositPayload = {
+        currency,
+        amount,
+        transactionHash: document.getElementById("wallet-tx-input")?.value?.trim()
+          || document.getElementById("wallet-reference-input")?.value?.trim()
+          || "",
+        depositorName: document.getElementById("wallet-sender-input")?.value?.trim() || "",
+      };
+      const destination = currency === "USDT"
+        ? {
+            address: document.getElementById("wallet-address-input")?.value?.trim() || "",
+            network: document.getElementById("wallet-network-input")?.value?.trim() || "",
+          }
+        : {
+            bankName: document.getElementById("wallet-bank-input")?.value?.trim() || "",
+            accountName: document.getElementById("wallet-account-name-input")?.value?.trim() || "",
+            accountNumber: document.getElementById("wallet-account-input")?.value?.replace(/\s+/g, "").trim() || "",
+          };
 
       if (!amount || Number(amount) <= 0) {
         showError("Enter a valid amount.");
+        return;
+      }
+      if (mode === "withdraw" && currency === "USDT" && (!destination.address || !destination.network)) {
+        showError("Enter wallet address and network.");
+        return;
+      }
+      if (mode === "withdraw" && currency === "NGN" && (!destination.bankName || !destination.accountName || !/^\d{10}$/.test(destination.accountNumber))) {
+        showError("Enter bank name, account name, and 10-digit account number.");
         return;
       }
 
@@ -5237,14 +5388,7 @@ function bindDashboardActions() {
           await api("/api/deposits", {
             method: "POST",
             headers,
-            body: JSON.stringify({
-              currency,
-              amount,
-              transactionHash: document.getElementById("wallet-tx-input")?.value?.trim()
-                || document.getElementById("wallet-reference-input")?.value?.trim()
-                || "",
-              depositorName: document.getElementById("wallet-sender-input")?.value?.trim() || "",
-            }),
+            body: JSON.stringify(depositPayload),
           });
           await loadFinancialDashboard();
           clearActionModal();
@@ -5253,16 +5397,6 @@ function bindDashboardActions() {
           return;
         }
 
-        const destination = currency === "USDT"
-          ? {
-              address: document.getElementById("wallet-address-input")?.value?.trim() || "",
-              network: document.getElementById("wallet-network-input")?.value?.trim() || "",
-            }
-          : {
-              bankName: document.getElementById("wallet-bank-input")?.value?.trim() || "",
-              accountName: document.getElementById("wallet-account-name-input")?.value?.trim() || "",
-              accountNumber: document.getElementById("wallet-account-input")?.value?.trim() || "",
-            };
         await api("/api/withdrawals", {
           method: "POST",
           headers,

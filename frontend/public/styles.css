@@ -1204,8 +1204,15 @@ body[data-theme="dark"] .section-loading-card {
   display: grid;
   gap: 4px;
   padding: 10px 12px;
+  border: 0;
   border-radius: 16px;
   background: var(--soft-surface);
+  color: var(--text);
+  text-align: left;
+}
+
+.notification-item.read {
+  opacity: 0.68;
 }
 
 .notification-item strong {
@@ -2121,6 +2128,13 @@ body[data-theme="dark"] .mirror-guide-pill {
 
 .wallet-instructions p {
   margin: 0;
+}
+
+.wallet-equivalent-preview {
+  margin: -2px 0 0;
+  color: var(--accent);
+  font-size: 0.86rem;
+  font-weight: 800;
 }
 
 .wallet-instructions strong,
