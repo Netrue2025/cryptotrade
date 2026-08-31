@@ -671,6 +671,8 @@ button {
 .slider-pill,
 .ticket-side-btn,
 .step-btn,
+.password-toggle,
+.wallet-choice,
 .nav-button,
 .segment,
 .button-primary,
@@ -722,6 +724,34 @@ select {
   padding: 14px 16px;
   background: var(--input-bg);
   color: var(--text);
+}
+
+.password-field {
+  position: relative;
+  display: block;
+}
+
+.password-field input {
+  padding-right: 50px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.password-toggle:hover {
+  background: var(--soft-surface);
+  color: var(--accent);
 }
 
 .button-primary,
@@ -1167,6 +1197,11 @@ body[data-theme="dark"] .section-loading-card {
 
 .neutral {
   color: #94a3b8;
+}
+
+.warning-copy {
+  color: #b7791f;
+  font-weight: 700;
 }
 
 .market-mode-bar {
@@ -1801,6 +1836,27 @@ body[data-theme="dark"] .mirror-guide-pill {
 .action-modal-card {
   display: grid;
   gap: 14px;
+}
+
+.wallet-choice-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.wallet-choice {
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--soft-surface);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.wallet-choice.active {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
 }
 
 .action-metric-stack {

@@ -14,6 +14,7 @@ const EXCHANGE_OPTIONS = [
 ];
 const WATCHLIST_REFRESH_INTERVAL_MS = 30000;
 const TRADE_REFRESH_INTERVAL_MS = 30000;
+const FUTURES_REFRESH_INTERVAL_MS = 180000;
 const SIGNAL_CHART_REFRESH_INTERVAL_MS = 5000;
 const SIGNAL_AUDIO_ENABLED_STORAGE_KEY = "tradeflow-signal-audio-enabled";
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
@@ -88,6 +89,8 @@ const state = {
   trades: [],
   dashboardMarketMode: "spot",
   futuresAccount: null,
+  futuresLastLoadedAt: 0,
+  futuresError: "",
   loadingFutures: false,
   expandedFuturesPositionIds: [],
   expandedFuturesOrderIds: [],
@@ -169,6 +172,7 @@ const topbarActions = document.getElementById("topbar-actions");
 
 let watchlistRefreshPromise = null;
 let tradeRefreshPromise = null;
+let futuresRefreshPromise = null;
 let signalChartRefreshTimer = null;
 let signalAlertAudio = null;
 let signalAudioUnlockHandler = null;
@@ -549,6 +553,10 @@ function formatUsdtUnit(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} USDT`;
+}
+
+function formatCurrencyAmount(value, currency = "USDT") {
+  return String(currency || "USDT").toUpperCase() === "NGN" ? formatNaira(value) : formatUsdtUnit(value);
 }
 
 function getSignalById(signalId) {
@@ -1006,6 +1014,10 @@ function escapeHtml(value) {
 
 function icon(name) {
   const paths = {
+    eye:
+      '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff:
+      '<path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.4 10.4 0 0 1 12 5c6 0 9.5 7 9.5 7a16.2 16.2 0 0 1-3.1 4"/><path d="M6.6 6.6C3.9 8.4 2.5 12 2.5 12s3.5 7 9.5 7a9.7 9.7 0 0 0 4.1-.9"/>',
     settings:
       '<path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Zm8 3.3-.9-.5a7.5 7.5 0 0 0-.4-1l.5-1a1 1 0 0 0-.2-1.1l-1.2-1.2a1 1 0 0 0-1.1-.2l-1 .5c-.3-.2-.7-.3-1-.4L14 3h-4l-.4 1.1c-.3.1-.7.2-1 .4l-1-.5a1 1 0 0 0-1.1.2L5 5.4a1 1 0 0 0-.2 1.1l.5 1c-.2.3-.3.7-.4 1L4 12v.1l.9.4c.1.3.2.7.4 1l-.5 1a1 1 0 0 0 .2 1.1l1.2 1.2a1 1 0 0 0 1.1.2l1-.5c.3.2.7.3 1 .4L10 21h4l.4-1.1c.3-.1.7-.2 1-.4l1 .5a1 1 0 0 0 1.1-.2l1.2-1.2a1 1 0 0 0 .2-1.1l-.5-1c.2-.3.3-.7.4-1l.9-.4V12Z"/>',
     signals:
@@ -1024,6 +1036,20 @@ function icon(name) {
     <svg viewBox="0 0 24 24" class="nav-icon" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       ${paths[name] || paths.home}
     </svg>
+  `;
+}
+
+function renderPasswordField({ label, name, placeholder, autocomplete, value = "", required = true }) {
+  return `
+    <label class="stack-label">
+      <span>${escapeHtml(label)}</span>
+      <span class="password-field">
+        <input name="${escapeHtml(name)}" type="password" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="${escapeHtml(autocomplete)}" ${required ? "required" : ""} />
+        <button class="password-toggle" data-password-toggle type="button" aria-label="Show password" title="Show password">
+          ${icon("eye")}
+        </button>
+      </span>
+    </label>
   `;
 }
 
@@ -1089,12 +1115,11 @@ function canUseFuturesMode() {
 }
 
 function isFuturesMode() {
-  return state.dashboardMarketMode === "futures";
+  return false;
 }
 
 function setDashboardMarketMode(mode) {
-  const nextMode = mode === "futures" ? "futures" : "spot";
-  state.dashboardMarketMode = nextMode === "futures" && !canUseFuturesMode() ? "spot" : nextMode;
+  state.dashboardMarketMode = "spot";
 }
 
 function getSpotMirrorGuidance(exchange = getActiveExchange()) {
@@ -1769,79 +1794,117 @@ function renderActionModal() {
     const rate = Number(settings.exchangeRate?.usdtToNgn || state.financialDashboard?.totalBalance?.usdtToNgnRate || 0);
     const usdtWallet = getFinancialWallet("USDT");
     const ngnWallet = getFinancialWallet("NGN");
-    const title = isDeposit ? "Deposit USDT" : "Withdraw Funds";
-    const eyebrow = isDeposit ? "Wallet Funding" : "Wallet Cashout";
-    const buttonLabel = isDeposit ? "I have sent the payment" : "Submit withdrawal";
-    const note = isDeposit
-      ? `Send only USDT on ${depositSettings.usdtNetwork || "the configured network"} to the address below. Your balance updates after admin approval.`
-      : `Available: ${formatUsdtUnit(Number(usdtWallet?.availableBalance || 0))} / ${formatNaira(Number(ngnWallet?.availableBalance || 0))}. Rate: ${rate ? `${formatNaira(rate)} per USDT` : "not configured"}.`;
+    const currency = ["NGN", "USDT"].includes(state.actionModal.currency) ? state.actionModal.currency : "";
+    const currencyLabel = currency === "NGN" ? "Naira" : currency;
+    const title = isDeposit ? "Deposit" : "Withdraw";
+    const eyebrow = isDeposit ? "Wallet" : "Cashout";
+    const buttonLabel = isDeposit ? "Submit deposit" : "Submit withdrawal";
+    const note = !currency
+      ? "Choose currency."
+      : isDeposit
+        ? currency === "NGN"
+          ? rate
+            ? `Rate: ${formatNaira(rate)} / USDT.`
+            : "Admin confirms Naira deposits."
+          : `Network: ${depositSettings.usdtNetwork || "USDT"}.`
+        : currency === "NGN"
+          ? `Available: ${formatNaira(Number(ngnWallet?.availableBalance || 0))}.`
+          : `Available: ${formatUsdtUnit(Number(usdtWallet?.availableBalance || 0))}.`;
+    const currencyChoices = `
+      <div class="wallet-choice-row" role="group" aria-label="${isDeposit ? "Deposit" : "Withdrawal"} currency">
+        <button class="wallet-choice ${currency === "NGN" ? "active" : ""}" data-wallet-currency="NGN" type="button">Naira</button>
+        <button class="wallet-choice ${currency === "USDT" ? "active" : ""}" data-wallet-currency="USDT" type="button">USDT</button>
+      </div>
+    `;
+    const depositForm = currency === "NGN"
+      ? `
+        <label class="stack-label">
+          <span>Amount (Naira)</span>
+          <input id="wallet-amount-input" type="number" min="0" step="1" placeholder="Enter amount" />
+        </label>
+        <label class="stack-label">
+          <span>Sender name</span>
+          <input id="wallet-sender-input" type="text" placeholder="Name on payment" value="${escapeHtml(state.user?.name || "")}" />
+        </label>
+        <label class="stack-label">
+          <span>Reference</span>
+          <input id="wallet-reference-input" type="text" placeholder="Payment reference" />
+        </label>
+      `
+      : currency === "USDT"
+        ? `
+          <label class="stack-label">
+            <span>Amount (USDT)</span>
+            <input id="wallet-amount-input" type="number" min="0" step="0.00000001" placeholder="Enter amount" />
+          </label>
+          <div class="wallet-instructions">
+            <span>Send to</span>
+            <code>${escapeHtml(depositSettings.usdtAddress || "Deposit address not configured")}</code>
+            <span>Network</span>
+            <strong>${escapeHtml(depositSettings.usdtNetwork || "Not configured")}</strong>
+          </div>
+          <label class="stack-label">
+            <span>Hash</span>
+            <input id="wallet-tx-input" type="text" placeholder="Transaction hash" />
+          </label>
+        `
+        : "";
+    const withdrawalForm = currency === "NGN"
+      ? `
+        <label class="stack-label">
+          <span>Amount (Naira)</span>
+          <input id="wallet-amount-input" type="number" min="0" step="1" placeholder="Enter amount" />
+        </label>
+        <label class="stack-label">
+          <span>Bank</span>
+          <input id="wallet-bank-input" type="text" placeholder="Bank name" />
+        </label>
+        <label class="stack-label">
+          <span>Account name</span>
+          <input id="wallet-account-name-input" type="text" placeholder="Account name" value="${escapeHtml(state.user?.name || "")}" />
+        </label>
+        <label class="stack-label">
+          <span>Account number</span>
+          <input id="wallet-account-input" type="text" inputmode="numeric" maxlength="10" placeholder="10 digits" />
+        </label>
+      `
+      : currency === "USDT"
+        ? `
+          <label class="stack-label">
+            <span>Amount (USDT)</span>
+            <input id="wallet-amount-input" type="number" min="0" step="0.00000001" placeholder="Enter amount" />
+          </label>
+          <label class="stack-label">
+            <span>Wallet address</span>
+            <input id="wallet-address-input" type="text" placeholder="USDT address" />
+          </label>
+          <label class="stack-label">
+            <span>Network</span>
+            <input id="wallet-network-input" type="text" placeholder="TRC20" />
+          </label>
+        `
+        : "";
     return `
       <div class="modal-backdrop">
         <div class="modal-card action-modal-card">
           <button class="modal-close" id="action-modal-close-btn" type="button">x</button>
           <p class="modal-eyebrow neutral">${eyebrow}</p>
-          <h3>${title}</h3>
+          <h3>${currencyLabel ? `${title} ${currencyLabel}` : title}</h3>
           <p class="modal-text">${note}</p>
+          ${currencyChoices}
           <div class="stack-form">
-            ${
-              isDeposit
-                ? `
-                  <label class="stack-label">
-                    <span>Amount (USDT)</span>
-                    <input id="wallet-amount-input" type="number" min="0" step="0.00000001" placeholder="Enter USDT amount" />
-                  </label>
-                  <div class="wallet-instructions">
-                    <span>Send exactly</span>
-                    <strong id="wallet-send-exactly">USDT amount entered above</strong>
-                    <span>To</span>
-                    <code>${escapeHtml(depositSettings.usdtAddress || "Deposit address not configured")}</code>
-                    <span>Network</span>
-                    <strong>${escapeHtml(depositSettings.usdtNetwork || "Not configured")}</strong>
-                  </div>
-                  <label class="stack-label">
-                    <span>Transaction hash</span>
-                    <input id="wallet-tx-input" type="text" placeholder="Optional blockchain transaction hash" />
-                  </label>
-                `
-                : `
-                  <label class="stack-label">
-                    <span>Currency</span>
-                    <select id="wallet-currency-input">
-                      <option value="USDT">USDT</option>
-                      <option value="NGN">NGN</option>
-                    </select>
-                  </label>
-                  <label class="stack-label">
-                    <span>Amount</span>
-                    <input id="wallet-amount-input" type="number" min="0" step="0.00000001" placeholder="Enter amount" />
-                  </label>
-                  <label class="stack-label">
-                    <span>Bank name</span>
-                    <input id="wallet-bank-input" type="text" placeholder="Enter bank name" />
-                  </label>
-                  <label class="stack-label">
-                    <span>Account name</span>
-                    <input id="wallet-account-name-input" type="text" placeholder="Enter account name" value="${escapeHtml(state.user?.name || "")}" />
-                  </label>
-                  <label class="stack-label">
-                    <span>Account number</span>
-                    <input id="wallet-account-input" type="text" inputmode="numeric" maxlength="10" placeholder="10-digit account number" />
-                  </label>
-                  <label class="stack-label">
-                    <span>USDT wallet address</span>
-                    <input id="wallet-address-input" type="text" placeholder="Required only for USDT withdrawals" />
-                  </label>
-                  <label class="stack-label">
-                    <span>USDT network</span>
-                    <input id="wallet-network-input" type="text" placeholder="Example: TRC20" />
-                  </label>
-                `
-            }
+            ${isDeposit ? depositForm : withdrawalForm}
           </div>
-          <div class="modal-actions">
-            <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
-            <button class="button-primary shimmer-button" id="wallet-submit-btn" data-wallet-mode="${state.actionModal.type}" type="button">${buttonLabel}</button>
-          </div>
+          ${
+            currency
+              ? `
+                <div class="modal-actions">
+                  <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
+                  <button class="button-primary shimmer-button" id="wallet-submit-btn" data-wallet-mode="${state.actionModal.type}" data-wallet-currency-selected="${currency}" type="button">${buttonLabel}</button>
+                </div>
+              `
+              : ""
+          }
         </div>
       </div>
     `;
@@ -1991,7 +2054,12 @@ function renderAuthPane() {
     return `
       <form id="register-form" class="auth-form">
         <label>Name <input name="name" placeholder="Full name or username" autocomplete="name" required /></label>
-        <label>Password <input name="password" type="password" placeholder="Create password" autocomplete="new-password" required /></label>
+        ${renderPasswordField({
+          label: "Password",
+          name: "password",
+          placeholder: "Create password",
+          autocomplete: "new-password",
+        })}
         <label>Sign up as
           <select name="role">
             <option value="user">User</option>
@@ -2007,7 +2075,12 @@ function renderAuthPane() {
   return `
     <form id="login-form" class="auth-form">
       <label>Email <input name="email" type="text" placeholder="Email or username" autocomplete="username" required /></label>
-      <label>Password <input name="password" type="password" placeholder="Your password" autocomplete="current-password" required /></label>
+      ${renderPasswordField({
+        label: "Password",
+        name: "password",
+        placeholder: "Your password",
+        autocomplete: "current-password",
+      })}
       <label>Sign in as
         <select name="role">
           <option value="user">User</option>
@@ -2156,7 +2229,25 @@ function bindModalActions() {
   }
 }
 
+function bindPasswordVisibilityToggles() {
+  document.querySelectorAll("[data-password-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = button.closest(".password-field")?.querySelector("input");
+      if (!input) {
+        return;
+      }
+      const shouldShow = input.type === "password";
+      input.type = shouldShow ? "text" : "password";
+      button.innerHTML = icon(shouldShow ? "eyeOff" : "eye");
+      button.setAttribute("aria-label", shouldShow ? "Hide password" : "Show password");
+      button.setAttribute("title", shouldShow ? "Hide password" : "Show password");
+    });
+  });
+}
+
 function bindAuthForms() {
+  bindPasswordVisibilityToggles();
+
   const loginForm = document.getElementById("login-form");
   const registerForm = document.getElementById("register-form");
 
@@ -2550,12 +2641,13 @@ function disconnectWatchSocket() {
 
 function startTradeRefreshTimer() {
   clearInterval(state.tradeRefreshTimer);
+  const refreshIntervalMs = isFuturesMode() ? FUTURES_REFRESH_INTERVAL_MS : TRADE_REFRESH_INTERVAL_MS;
   state.tradeRefreshTimer = setInterval(() => {
     if (!shouldRefreshTradeLive()) {
       return;
     }
     void refreshDashboardLiveData();
-  }, TRADE_REFRESH_INTERVAL_MS);
+  }, refreshIntervalMs);
 }
 
 function stopTradeRefreshTimer() {
@@ -2638,11 +2730,10 @@ async function refreshDashboardLiveData() {
     return tradeRefreshPromise;
   }
 
-  tradeRefreshPromise = Promise.allSettled([
-    refreshTradeMarketData(),
-    refreshTradeStatusData(),
-    isFuturesMode() ? loadFuturesDashboard() : Promise.resolve(),
-  ]).finally(() => {
+  const refreshTasks = isFuturesMode()
+    ? [loadFuturesDashboard()]
+    : [refreshTradeMarketData(), refreshTradeStatusData()];
+  tradeRefreshPromise = Promise.allSettled(refreshTasks).finally(() => {
     tradeRefreshPromise = null;
   });
 
@@ -2757,19 +2848,44 @@ async function loadSignalAutoTradeSettings() {
   }
 }
 
-async function loadFuturesDashboard() {
+async function loadFuturesDashboard(options = {}) {
   if (!state.user || !canUseFuturesMode()) {
     state.futuresAccount = null;
+    state.futuresLastLoadedAt = 0;
+    state.futuresError = "";
     state.loadingFutures = false;
     return;
   }
 
-  state.loadingFutures = true;
-  try {
-    state.futuresAccount = await api("/api/binance/futures/account");
-  } finally {
-    state.loadingFutures = false;
+  const force = !!options.force;
+  const hasFreshSnapshot =
+    state.futuresAccount && Date.now() - Number(state.futuresLastLoadedAt || 0) < FUTURES_REFRESH_INTERVAL_MS;
+  if (!force && hasFreshSnapshot) {
+    return state.futuresAccount;
   }
+
+  if (futuresRefreshPromise) {
+    return futuresRefreshPromise;
+  }
+
+  state.loadingFutures = !state.futuresAccount;
+  futuresRefreshPromise = api("/api/binance/futures/account")
+    .then((account) => {
+      state.futuresAccount = account;
+      state.futuresLastLoadedAt = Date.now();
+      state.futuresError = account.warning || "";
+      return account;
+    })
+    .catch((error) => {
+      state.futuresError = error.message || "Unable to refresh Binance futures right now.";
+      throw error;
+    })
+    .finally(() => {
+      state.loadingFutures = false;
+      futuresRefreshPromise = null;
+    });
+
+  return futuresRefreshPromise;
 }
 
 async function loadDashboardData() {
@@ -3116,22 +3232,7 @@ function renderBottomNav() {
 }
 
 function renderMarketModeSwitch() {
-  const futuresDisabled = !canUseFuturesMode();
-  return `
-    <section class="market-mode-bar">
-      <div class="segmented market-mode-switch" role="tablist" aria-label="Trading mode">
-        <button class="segment ${!isFuturesMode() ? "active" : ""}" data-market-mode="spot" type="button">Spot</button>
-        <button class="segment ${isFuturesMode() ? "active" : ""}" data-market-mode="futures" type="button" ${futuresDisabled ? "disabled" : ""}>Futures</button>
-      </div>
-      <p class="muted-copy">${
-        futuresDisabled
-          ? "Connect Binance in Settings to view and manage futures trades."
-          : isFuturesMode()
-            ? "Binance futures balances, positions, and open orders."
-            : "Spot balances, mirrored trades, and open orders."
-      }</p>
-    </section>
-  `;
+  return "";
 }
 
 function renderSummaryCard() {
@@ -3355,6 +3456,11 @@ function renderFuturesBalanceGrid(account) {
         <div>
           <h3>Binance Futures Balance</h3>
           <p class="muted-copy">USDT-M futures wallet and margin snapshot.</p>
+          ${
+            account?.warning || state.futuresError
+              ? `<p class="muted-copy warning-copy">${account?.warning || state.futuresError}</p>`
+              : ""
+          }
         </div>
       </div>
       <div class="metric-grid futures-metric-grid">
@@ -4078,13 +4184,15 @@ function renderCurrentUserWalletSummary() {
 }
 
 function renderAdminDepositCard(deposit) {
+  const currency = deposit.currency || "USDT";
+  const reference = deposit.transactionHash || deposit.bankReference || "";
   return `
     <div class="asset-card admin-finance-card">
       <div>
         <strong>${escapeHtml(deposit.user?.name || "Unknown user")}</strong>
         <p class="muted-copy">${escapeHtml(deposit.user?.email || "")}</p>
-        <p class="muted-copy">${formatUsdtUnit(deposit.amount)} | ${escapeHtml(deposit.network || "")}</p>
-        <p class="muted-copy">Hash: ${escapeHtml(deposit.transactionHash || "Not provided")}</p>
+        <p class="muted-copy">${formatCurrencyAmount(deposit.amount, currency)}${deposit.network ? ` | ${escapeHtml(deposit.network)}` : ""}</p>
+        <p class="muted-copy">Ref: ${escapeHtml(reference || "Not provided")}</p>
       </div>
       <div class="asset-values">
         <strong>${escapeHtml(deposit.status)}</strong>
@@ -4210,7 +4318,13 @@ function renderSettingsPane() {
             : `<p class="muted-copy">Connect ${activeExchangeLabel} once and the app will remember it for future logins.</p>`
         }
         <label>API key <input name="apiKey" value="${escapeHtml(settingsDraft.apiKey)}" placeholder="Paste ${activeExchangeLabel} API key" required /></label>
-        <label>API secret <input name="apiSecret" type="password" value="${escapeHtml(settingsDraft.apiSecret)}" placeholder="Paste ${activeExchangeLabel} API secret" required /></label>
+        ${renderPasswordField({
+          label: "API secret",
+          name: "apiSecret",
+          placeholder: `Paste ${activeExchangeLabel} API secret`,
+          autocomplete: "off",
+          value: settingsDraft.apiSecret,
+        })}
         <label>
           Environment
           <select name="testnet">
@@ -4536,6 +4650,7 @@ function renderDashboardShell() {
 }
 
 function bindDashboardActions() {
+  bindPasswordVisibilityToggles();
   bindMarketModeActions();
   bindHistoryActions();
   bindFuturesActions();
@@ -4653,18 +4768,29 @@ function bindDashboardActions() {
 
   const depositButton = document.getElementById("netrue-deposit-btn");
   if (depositButton) {
-    depositButton.addEventListener("click", () => showActionModal({ type: "deposit" }));
+    depositButton.addEventListener("click", () => showActionModal({ type: "deposit", currency: "" }));
   }
 
   const withdrawButton = document.getElementById("netrue-withdraw-btn");
   if (withdrawButton) {
-    withdrawButton.addEventListener("click", () => showActionModal({ type: "withdraw" }));
+    withdrawButton.addEventListener("click", () => showActionModal({ type: "withdraw", currency: "" }));
   }
+
+  document.querySelectorAll("[data-wallet-currency]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.actionModal = {
+        ...state.actionModal,
+        currency: button.dataset.walletCurrency,
+      };
+      render();
+    });
+  });
 
   const walletSubmitButton = document.getElementById("wallet-submit-btn");
   if (walletSubmitButton) {
     walletSubmitButton.addEventListener("click", async () => {
       const mode = walletSubmitButton.dataset.walletMode || "deposit";
+      const currency = walletSubmitButton.dataset.walletCurrencySelected || state.actionModal?.currency || "USDT";
       const amount = document.getElementById("wallet-amount-input")?.value?.trim();
 
       if (!amount || Number(amount) <= 0) {
@@ -4679,8 +4805,12 @@ function bindDashboardActions() {
             method: "POST",
             headers,
             body: JSON.stringify({
+              currency,
               amount,
-              transactionHash: document.getElementById("wallet-tx-input")?.value?.trim() || "",
+              transactionHash: document.getElementById("wallet-tx-input")?.value?.trim()
+                || document.getElementById("wallet-reference-input")?.value?.trim()
+                || "",
+              depositorName: document.getElementById("wallet-sender-input")?.value?.trim() || "",
             }),
           });
           await loadFinancialDashboard();
@@ -4690,7 +4820,6 @@ function bindDashboardActions() {
           return;
         }
 
-        const currency = document.getElementById("wallet-currency-input")?.value || "USDT";
         const destination = currency === "USDT"
           ? {
               address: document.getElementById("wallet-address-input")?.value?.trim() || "",
@@ -5037,7 +5166,8 @@ async function cancelFuturesOrder(orderId, symbol) {
       method: "POST",
       body: JSON.stringify({ symbol }),
     });
-    await loadFuturesDashboard();
+    state.futuresLastLoadedAt = 0;
+    await loadFuturesDashboard({ force: true });
     render();
     showNotice(`Futures order ${String(orderId).slice(-8)} canceled`);
   }).catch((error) => showError(error.message));
@@ -5053,7 +5183,8 @@ async function closeFuturesPosition(symbol, positionSide, quantity) {
       method: "POST",
       body: JSON.stringify({ symbol, positionSide, quantity }),
     });
-    await loadFuturesDashboard();
+    state.futuresLastLoadedAt = 0;
+    await loadFuturesDashboard({ force: true });
     render();
     showNotice(`${symbol} futures position close order sent`);
   }).catch((error) => showError(error.message));
@@ -5065,8 +5196,9 @@ function bindMarketModeActions() {
       const nextMode = button.dataset.marketMode || "spot";
       setDashboardMarketMode(nextMode);
       render();
+      startTradeRefreshTimer();
       if (isFuturesMode()) {
-        await loadFuturesDashboard().catch((error) => showError(error.message));
+        await loadFuturesDashboard({ force: !state.futuresAccount }).catch((error) => showError(error.message));
         render();
       }
     };
