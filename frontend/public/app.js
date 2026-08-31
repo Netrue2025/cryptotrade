@@ -3497,6 +3497,8 @@ function renderSummaryCard() {
     ? (portfolioBalance ? (todayValue / portfolioBalance) * 100 : 0)
     : Number(state.todayPnlPercent || 0);
   const todayTone = todayValue > 0 ? "positive" : todayValue < 0 ? "negative" : "neutral";
+  const userMirroredPnlPercentage = Number(state.financialDashboard?.performance?.todayPercentage || 0);
+  const userPnlTone = investmentDailyReturn > 0 ? "positive" : investmentDailyReturn < 0 ? "negative" : "neutral";
   const chips = isAdmin
     ? [
         "Spot",
@@ -3510,17 +3512,32 @@ function renderSummaryCard() {
       ];
 
   if (isAdmin) {
+    const adminBalanceNgn = Number(state.totalNgn || (configuredRate ? portfolioBalance * configuredRate : 0));
+    const adminPnlNgn = configuredRate ? todayValue * configuredRate : 0;
     return `
-      <section class="summary-hero balance-slide netrue-card">
-        ${state.loadingFinancial ? renderSectionLoadingOverlay("Loading overview", "Syncing wallet totals") : ""}
-        <div>
-          <p class="eyebrow light">Admin</p>
-          <h2>${Number(adminStats.totalUsers || 0).toLocaleString()} Users</h2>
-          <p class="muted-bright">Deposits ${Number(adminStats.pendingDeposits || 0)} | Withdrawals ${Number(adminStats.pendingWithdrawals || 0)}</p>
-        </div>
-        <div class="hero-chip-row">
-          ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
-        </div>
+      <section class="balance-carousel">
+        <article class="summary-hero balance-slide fintech-card">
+          ${state.loadingFinancial || accountLoading ? renderSectionLoadingOverlay("Loading wallet", `Syncing ${exchangeLabel}`) : ""}
+          <div class="fintech-card-pattern" aria-hidden="true"></div>
+          <div class="fintech-card-top">
+            <span class="card-icon">${icon("card")}</span>
+            <span>Admin Wallet</span>
+          </div>
+          <h2>${state.user.exchangeConnected ? formatUsdt(portfolioBalance) : "--"}</h2>
+          <div class="fintech-balance-row">
+            <span>${exchangeLabel}</span>
+            <span>${formatNaira(adminBalanceNgn)}</span>
+          </div>
+          <p class="muted-bright">
+            P&L <span class="${todayTone}">${todayValue >= 0 ? "+" : "-"}${formatUsdt(Math.abs(todayValue))} ${todayPercent >= 0 ? "+" : ""}${formatNumber(todayPercent, 2)}%</span>
+          </p>
+          <p class="muted-bright">Mirrored ${adminPnlNgn >= 0 ? "+" : "-"}${formatNaira(Math.abs(adminPnlNgn))}</p>
+          <div class="hero-chip-row">
+            <span class="hero-chip">${Number(adminStats.totalUsers || 0).toLocaleString()} users</span>
+            <span class="hero-chip">Deposits ${Number(adminStats.pendingDeposits || 0)}</span>
+            <span class="hero-chip">Withdrawals ${Number(adminStats.pendingWithdrawals || 0)}</span>
+          </div>
+        </article>
       </section>
     `;
   }
@@ -3539,7 +3556,9 @@ function renderSummaryCard() {
             <span>${formatUsdtUnit(ledgerUsdt)}</span>
             <span>${formatNaira(ledgerNgn)}</span>
           </div>
-          <p class="muted-bright">Today ${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))}</p>
+          <p class="muted-bright">
+            P&L <span class="${userPnlTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))} ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
+          </p>
           <p class="muted-bright">Locked ${formatUsdtUnit(lockedUsdt)} | ${formatNaira(lockedNgn)}</p>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">${icon("bank")} Deposit</button>
