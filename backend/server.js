@@ -1311,11 +1311,14 @@ async function getConnectedWalletDetailsLive(user, usdtNgnRate) {
 }
 
 async function buildManagedUserSummary(user, usdtNgnRate, { refreshWallets = false } = {}) {
+  const financeProfile = financialService.getUserFinanceProfile(user.id);
   return {
     ...sanitizeUser(user),
     mirrorStatus: user.mirrorEnabled ? "ACTIVE" : "OFF",
     connectedExchanges: listExchanges().filter((exchange) => !!user[exchange.id]),
     passwordStoredSecurely: true,
+    ledgerWallets: financeProfile.wallets,
+    recentTransactions: financeProfile.recentTransactions,
     walletDetails: refreshWallets
       ? await getConnectedWalletDetailsLive(user, usdtNgnRate)
       : await getConnectedWalletDetails(user, usdtNgnRate),
@@ -3366,6 +3369,15 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/notifications") {
+    const user = requireAuth(req, res);
+    if (!user) {
+      return true;
+    }
+    sendJson(res, 200, { notifications: financialService.listNotifications(user) });
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/deposits") {
     const user = requireAuth(req, res, "user");
     if (!user) {
@@ -3510,6 +3522,29 @@ async function handleApi(req, res, url) {
       return true;
     }
     sendJson(res, 200, { withdrawals: financialService.listWithdrawals(admin, { status: url.searchParams.get("status") }) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin/transactions") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+    sendJson(res, 200, { transactions: financialService.listTransactions(admin, { limit: 500 }) });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/finance-history/delete") {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+    try {
+      const result = financialService.deleteFinanceHistory(admin, await readBody(req), getRequestMeta(req));
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
     return true;
   }
 
@@ -4439,6 +4474,84 @@ async function handleApi(req, res, url) {
         .map((user) => buildManagedUserSummary(user, usdtNgnRate))
     );
     sendJson(res, 200, { users });
+    return true;
+  }
+
+  const adminUserFinanceMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/finance$/);
+  if (req.method === "GET" && adminUserFinanceMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+    try {
+      const profile = financialService.getUserFinanceProfile(decodeURIComponent(adminUserFinanceMatch[1] || "").trim());
+      sendJson(res, 200, profile);
+    } catch (error) {
+      sendJson(res, 404, { error: error.message });
+    }
+    return true;
+  }
+
+  const adminUserBonusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/bonus$/);
+  if (req.method === "POST" && adminUserBonusMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+    try {
+      const result = financialService.addBonus(
+        admin,
+        decodeURIComponent(adminUserBonusMatch[1] || "").trim(),
+        await readBody(req),
+        getRequestMeta(req)
+      );
+      scheduleSettingsUsersBroadcast("admin_bonus_added");
+      sendJson(res, 201, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  const adminUserMessageMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/message$/);
+  const adminUserBalanceMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/balance$/);
+  if (req.method === "POST" && adminUserBalanceMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+    try {
+      const result = financialService.setUserBalance(
+        admin,
+        decodeURIComponent(adminUserBalanceMatch[1] || "").trim(),
+        await readBody(req),
+        getRequestMeta(req)
+      );
+      scheduleSettingsUsersBroadcast("admin_balance_updated");
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && adminUserMessageMatch) {
+    const admin = requireAuth(req, res, "admin");
+    if (!admin) {
+      return true;
+    }
+    try {
+      const notification = financialService.sendAdminMessage(
+        admin,
+        decodeURIComponent(adminUserMessageMatch[1] || "").trim(),
+        await readBody(req),
+        getRequestMeta(req)
+      );
+      scheduleSettingsUsersBroadcast("admin_message_sent");
+      sendJson(res, 201, { notification });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
     return true;
   }
 

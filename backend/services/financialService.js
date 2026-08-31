@@ -52,6 +52,10 @@ function defaultSettings() {
     },
     deposit: {
       ngnEnabled: true,
+      bankName: getEnvValue("DEPOSIT_BANK_NAME") || "",
+      accountName: getEnvValue("DEPOSIT_ACCOUNT_NAME") || "",
+      accountNumber: getEnvValue("DEPOSIT_ACCOUNT_NUMBER") || "",
+      bankNote: getEnvValue("DEPOSIT_BANK_NOTE") || "",
       usdtAddress: getEnvValue("DEPOSIT_USDT_ADDRESS") || "",
       usdtNetwork: getEnvValue("DEPOSIT_USDT_NETWORK") || "TRC20",
       minUsdt: getEnvValue("MIN_DEPOSIT_USDT") || "1",
@@ -100,6 +104,7 @@ class FinancialService {
     this.db.transactions = Array.isArray(this.db.transactions) ? this.db.transactions : [];
     this.db.deposits = Array.isArray(this.db.deposits) ? this.db.deposits : [];
     this.db.withdrawals = Array.isArray(this.db.withdrawals) ? this.db.withdrawals : [];
+    this.db.notifications = Array.isArray(this.db.notifications) ? this.db.notifications : [];
     this.db.dailyPerformances = Array.isArray(this.db.dailyPerformances) ? this.db.dailyPerformances : [];
     this.db.auditLogs = Array.isArray(this.db.auditLogs) ? this.db.auditLogs : [];
     this.db.idempotencyKeys = Array.isArray(this.db.idempotencyKeys) ? this.db.idempotencyKeys : [];
@@ -214,6 +219,63 @@ class FinancialService {
       .map(clone);
   }
 
+  listTransactions(user, { limit = 200, offset = 0 } = {}) {
+    this.ensureState();
+    return this.db.transactions
+      .filter((item) => user.role === "admin" || item.userId === user.id)
+      .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+      .slice(offset, offset + limit)
+      .map((transaction) => this.enrichUserRecord(transaction));
+  }
+
+  getUserFinanceProfile(userId) {
+    this.ensureState();
+    const user = this.db.users.find((item) => item.id === userId && item.role === "user");
+    if (!user) {
+      throw new Error("User not found.");
+    }
+    return {
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      },
+      wallets: this.getWallets(user.id),
+      recentTransactions: this.getTransactions(user.id, { limit: 12 }),
+    };
+  }
+
+  listNotifications(user, { limit = 20 } = {}) {
+    this.ensureState();
+    return this.db.notifications
+      .filter((item) => user.role === "admin" || item.userId === user.id)
+      .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+      .slice(0, limit)
+      .map((item) => this.enrichUserRecord(item));
+  }
+
+  createNotification(input = {}) {
+    const notification = {
+      id: this.idGenerator(12),
+      userId: input.userId || "",
+      type: String(input.type || "INFO").trim().toUpperCase(),
+      title: String(input.title || "Update").trim(),
+      message: String(input.message || "").trim(),
+      entityType: String(input.entityType || "").trim(),
+      entityId: String(input.entityId || "").trim(),
+      readAt: null,
+      createdAt: this.clock(),
+    };
+    this.db.notifications.unshift(notification);
+    return notification;
+  }
+
+  notifyAdmins(input = {}) {
+    for (const admin of this.db.users.filter((user) => user.role === "admin")) {
+      this.createNotification({ ...input, userId: admin.id });
+    }
+  }
+
   getDashboard(user) {
     this.ensureState();
     const wallets = this.getWallets(user.id);
@@ -249,6 +311,7 @@ class FinancialService {
           .reduce((sum, transaction) => add(sum, transaction.amount), "0"),
       },
       recentTransactions: this.getTransactions(user.id, { limit: 10 }),
+      notifications: this.listNotifications(user, { limit: 12 }),
       settings: {
         deposit: clone(this.db.systemSettings.deposit),
         withdrawal: clone(this.db.systemSettings.withdrawal),
@@ -293,6 +356,13 @@ class FinancialService {
       adminNote: "",
     };
     this.db.deposits.unshift(deposit);
+    this.notifyAdmins({
+      type: "DEPOSIT",
+      title: "Deposit request",
+      message: `${user.name || "User"} submitted ${amount} ${currency}.`,
+      entityType: "Deposit",
+      entityId: deposit.id,
+    });
     this.audit(user, "DEPOSIT_SUBMITTED", "Deposit", deposit.id, { amount, currency }, requestMeta);
     this.saveIdempotent("deposit:create", user.id, requestMeta.idempotencyKey, deposit);
     this.persist();
@@ -341,6 +411,14 @@ class FinancialService {
       createdBy: admin.id,
       createdAt: this.clock(),
     });
+    this.createNotification({
+      userId: deposit.userId,
+      type: "DEPOSIT",
+      title: "Deposit approved",
+      message: `${deposit.amount} ${deposit.currency} added to your wallet.`,
+      entityType: "Deposit",
+      entityId: deposit.id,
+    });
     this.audit(admin, "DEPOSIT_APPROVED", "Deposit", deposit.id, { amount: deposit.amount, currency: deposit.currency }, requestMeta);
     this.persist();
     return clone(deposit);
@@ -356,9 +434,158 @@ class FinancialService {
     deposit.reviewedAt = this.clock();
     deposit.reviewedBy = admin.id;
     deposit.adminNote = String(input.adminNote || "").trim();
+    this.createNotification({
+      userId: deposit.userId,
+      type: "DEPOSIT",
+      title: "Deposit rejected",
+      message: deposit.adminNote || "Your deposit request was rejected.",
+      entityType: "Deposit",
+      entityId: deposit.id,
+    });
     this.audit(admin, "DEPOSIT_REJECTED", "Deposit", deposit.id, { amount: deposit.amount, currency: deposit.currency }, requestMeta);
     this.persist();
     return clone(deposit);
+  }
+
+  addBonus(admin, userId, input = {}, requestMeta = {}) {
+    this.ensureState();
+    const targetUser = this.db.users.find((user) => user.id === userId && user.role === "user");
+    if (!targetUser) {
+      throw new Error("User not found.");
+    }
+
+    const currency = normalizeCurrency(input.currency);
+    const amount = normalizeAmount(input.amount, "Bonus amount");
+    const note = String(input.note || "Bonus").trim();
+    const wallet = this.ensureWallet(targetUser.id, currency);
+    const balanceBefore = wallet.availableBalance;
+    wallet.availableBalance = add(wallet.availableBalance, amount);
+    wallet.updatedAt = this.clock();
+    const transaction = {
+      id: this.idGenerator(12),
+      userId: targetUser.id,
+      type: "BONUS",
+      currency,
+      amount,
+      balanceBefore,
+      balanceAfter: wallet.availableBalance,
+      reference: this.idGenerator(12),
+      status: "APPROVED",
+      description: note,
+      createdBy: admin.id,
+      createdAt: this.clock(),
+    };
+    this.db.transactions.unshift(transaction);
+    this.createNotification({
+      userId: targetUser.id,
+      type: "BONUS",
+      title: "Bonus added",
+      message: `${amount} ${currency} added to your wallet.`,
+      entityType: "Transaction",
+      entityId: transaction.id,
+    });
+    this.audit(admin, "BONUS_ADDED", "User", targetUser.id, { amount, currency }, requestMeta);
+    this.persist();
+    return {
+      transaction: clone(transaction),
+      profile: this.getUserFinanceProfile(targetUser.id),
+    };
+  }
+
+  setUserBalance(admin, userId, input = {}, requestMeta = {}) {
+    this.ensureState();
+    const targetUser = this.db.users.find((user) => user.id === userId && user.role === "user");
+    if (!targetUser) {
+      throw new Error("User not found.");
+    }
+
+    const currency = normalizeCurrency(input.currency);
+    const amount = normalizeNonNegativeAmount(input.amount, "Balance");
+    const note = String(input.note || "Balance updated").trim();
+    const wallet = this.ensureWallet(targetUser.id, currency);
+    const balanceBefore = wallet.availableBalance;
+    wallet.availableBalance = amount;
+    wallet.updatedAt = this.clock();
+    const transaction = {
+      id: this.idGenerator(12),
+      userId: targetUser.id,
+      type: "BALANCE_ADJUSTMENT",
+      currency,
+      amount: subtract(amount, balanceBefore),
+      balanceBefore,
+      balanceAfter: wallet.availableBalance,
+      reference: this.idGenerator(12),
+      status: "APPROVED",
+      description: note,
+      createdBy: admin.id,
+      createdAt: this.clock(),
+    };
+    this.db.transactions.unshift(transaction);
+    this.createNotification({
+      userId: targetUser.id,
+      type: "BALANCE",
+      title: "Balance updated",
+      message: `${currency} balance is now ${amount}.`,
+      entityType: "Transaction",
+      entityId: transaction.id,
+    });
+    this.audit(admin, "BALANCE_UPDATED", "User", targetUser.id, { amount, currency }, requestMeta);
+    this.persist();
+    return {
+      transaction: clone(transaction),
+      profile: this.getUserFinanceProfile(targetUser.id),
+    };
+  }
+
+  sendAdminMessage(admin, userId, input = {}, requestMeta = {}) {
+    this.ensureState();
+    const targetUser = this.db.users.find((user) => user.id === userId && user.role === "user");
+    if (!targetUser) {
+      throw new Error("User not found.");
+    }
+    const message = String(input.message || "").trim();
+    if (!message) {
+      throw new Error("Message is required.");
+    }
+    const notification = this.createNotification({
+      userId: targetUser.id,
+      type: "MESSAGE",
+      title: String(input.title || "Admin message").trim(),
+      message,
+      entityType: "User",
+      entityId: targetUser.id,
+    });
+    this.audit(admin, "ADMIN_MESSAGE_SENT", "User", targetUser.id, { notificationId: notification.id }, requestMeta);
+    this.persist();
+    return clone(notification);
+  }
+
+  resolveWithdrawalFunding(userId, currency, amount) {
+    const primaryWallet = this.ensureWallet(userId, currency);
+    if (compare(primaryWallet.availableBalance, amount) >= 0) {
+      return [{ wallet: primaryWallet, currency, amount }];
+    }
+
+    if (currency !== "USDT") {
+      throw new Error("Insufficient available balance.");
+    }
+
+    const sources = [];
+    let remainingUsdt = amount;
+    if (compare(primaryWallet.availableBalance, "0") > 0) {
+      sources.push({ wallet: primaryWallet, currency: "USDT", amount: primaryWallet.availableBalance });
+      remainingUsdt = subtract(remainingUsdt, primaryWallet.availableBalance);
+    }
+
+    const rate = this.db.systemSettings.exchangeRate.usdtToNgn;
+    const ngnAmount = multiplyRatio(remainingUsdt, rate, "1");
+    const ngnWallet = this.ensureWallet(userId, "NGN");
+    if (compare(ngnWallet.availableBalance, ngnAmount) < 0) {
+      throw new Error("Insufficient available balance.");
+    }
+
+    sources.push({ wallet: ngnWallet, currency: "NGN", amount: ngnAmount });
+    return sources;
   }
 
   createWithdrawal(user, input = {}, requestMeta = {}) {
@@ -372,16 +599,7 @@ class FinancialService {
     const amount = normalizeAmount(input.amount, "Withdrawal amount");
     this.validateWithdrawalSettings(currency, amount);
     this.validateDailyWithdrawalLimit(user.id);
-    const wallet = this.ensureWallet(user.id, currency);
-    if (compare(wallet.availableBalance, amount) < 0) {
-      throw new Error("Insufficient available balance.");
-    }
-
-    const balanceBefore = wallet.availableBalance;
-    const lockedBefore = wallet.lockedBalance;
-    wallet.availableBalance = subtract(wallet.availableBalance, amount);
-    wallet.lockedBalance = add(wallet.lockedBalance, amount);
-    wallet.updatedAt = this.clock();
+    const fundingSources = this.resolveWithdrawalFunding(user.id, currency, amount);
     const withdrawal = {
       id: this.idGenerator(12),
       userId: user.id,
@@ -398,27 +616,49 @@ class FinancialService {
       completedBy: null,
       rejectedAt: null,
       rejectedBy: null,
+      fundingSources: fundingSources.map((source) => ({
+        currency: source.currency,
+        amount: source.amount,
+      })),
       externalTransactionReference: "",
       adminNote: "",
     };
+
+    for (const source of fundingSources) {
+      const balanceBefore = source.wallet.availableBalance;
+      const lockedBefore = source.wallet.lockedBalance;
+      source.wallet.availableBalance = subtract(source.wallet.availableBalance, source.amount);
+      source.wallet.lockedBalance = add(source.wallet.lockedBalance, source.amount);
+      source.wallet.updatedAt = this.clock();
+      this.db.transactions.unshift({
+        id: this.idGenerator(12),
+        userId: user.id,
+        type: "WITHDRAWAL",
+        currency: source.currency,
+        amount: `-${source.amount}`,
+        balanceBefore,
+        balanceAfter: source.wallet.availableBalance,
+        reference: withdrawal.id,
+        status: "PENDING",
+        description: currency === source.currency ? "Withdrawal amount reserved." : `Reserved for ${currency} withdrawal.`,
+        createdBy: user.id,
+        createdAt: this.clock(),
+        metadata: {
+          requestedCurrency: currency,
+          requestedAmount: amount,
+          lockedBalanceBefore: lockedBefore,
+          lockedBalanceAfter: source.wallet.lockedBalance,
+        },
+      });
+    }
+
     this.db.withdrawals.unshift(withdrawal);
-    this.db.transactions.unshift({
-      id: this.idGenerator(12),
-      userId: user.id,
+    this.notifyAdmins({
       type: "WITHDRAWAL",
-      currency,
-      amount: `-${amount}`,
-      balanceBefore,
-      balanceAfter: wallet.availableBalance,
-      reference: withdrawal.id,
-      status: "PENDING",
-      description: "Withdrawal amount reserved from available balance.",
-      createdBy: user.id,
-      createdAt: this.clock(),
-      metadata: {
-        lockedBalanceBefore: lockedBefore,
-        lockedBalanceAfter: wallet.lockedBalance,
-      },
+      title: "Withdrawal request",
+      message: `${user.name || "User"} requested ${amount} ${currency}.`,
+      entityType: "Withdrawal",
+      entityId: withdrawal.id,
     });
     this.audit(user, "WITHDRAWAL_SUBMITTED", "Withdrawal", withdrawal.id, { amount, currency }, requestMeta);
     this.saveIdempotent("withdrawal:create", user.id, requestMeta.idempotencyKey, withdrawal);
@@ -453,32 +693,50 @@ class FinancialService {
     if (!["PENDING", "PROCESSING"].includes(withdrawal.status)) {
       throw new Error("Only pending or processing withdrawals can be completed.");
     }
-    const wallet = this.ensureWallet(withdrawal.userId, withdrawal.currency);
-    if (compare(wallet.lockedBalance, withdrawal.amount) < 0) {
-      throw new Error("Locked balance is lower than the withdrawal amount.");
+    const fundingSources = this.getWithdrawalFundingSources(withdrawal);
+    for (const source of fundingSources) {
+      const wallet = this.ensureWallet(withdrawal.userId, source.currency);
+      if (compare(wallet.lockedBalance, source.amount) < 0) {
+        throw new Error("Locked balance is lower than the withdrawal amount.");
+      }
     }
 
-    const lockedBefore = wallet.lockedBalance;
-    wallet.lockedBalance = subtract(wallet.lockedBalance, withdrawal.amount);
-    wallet.updatedAt = this.clock();
+    for (const source of fundingSources) {
+      const wallet = this.ensureWallet(withdrawal.userId, source.currency);
+      const lockedBefore = wallet.lockedBalance;
+      wallet.lockedBalance = subtract(wallet.lockedBalance, source.amount);
+      wallet.updatedAt = this.clock();
+      this.db.transactions.unshift({
+        id: this.idGenerator(12),
+        userId: withdrawal.userId,
+        type: "WITHDRAWAL_COMPLETED",
+        currency: source.currency,
+        amount: `-${source.amount}`,
+        balanceBefore: lockedBefore,
+        balanceAfter: wallet.lockedBalance,
+        reference: withdrawal.id,
+        status: "COMPLETED",
+        description: withdrawal.currency === source.currency ? "Withdrawal completed." : `${withdrawal.currency} withdrawal completed.`,
+        createdBy: admin.id,
+        createdAt: this.clock(),
+        metadata: {
+          requestedCurrency: withdrawal.currency,
+          requestedAmount: withdrawal.amount,
+        },
+      });
+    }
     withdrawal.status = "COMPLETED";
     withdrawal.completedAt = this.clock();
     withdrawal.completedBy = admin.id;
     withdrawal.externalTransactionReference = String(input.externalTransactionReference || input.transactionHash || "").trim();
     withdrawal.adminNote = String(input.adminNote || "").trim();
-    this.db.transactions.unshift({
-      id: this.idGenerator(12),
+    this.createNotification({
       userId: withdrawal.userId,
-      type: "WITHDRAWAL_COMPLETED",
-      currency: withdrawal.currency,
-      amount: `-${withdrawal.amount}`,
-      balanceBefore: lockedBefore,
-      balanceAfter: wallet.lockedBalance,
-      reference: withdrawal.id,
-      status: "COMPLETED",
-      description: "Withdrawal completed and released from locked balance.",
-      createdBy: admin.id,
-      createdAt: this.clock(),
+      type: "WITHDRAWAL",
+      title: "Withdrawal complete",
+      message: `${withdrawal.amount} ${withdrawal.currency} sent.`,
+      entityType: "Withdrawal",
+      entityId: withdrawal.id,
     });
     this.audit(admin, "WITHDRAWAL_COMPLETED", "Withdrawal", withdrawal.id, { amount: withdrawal.amount, currency: withdrawal.currency }, requestMeta);
     this.persist();
@@ -491,36 +749,53 @@ class FinancialService {
     if (!["PENDING", "PROCESSING"].includes(withdrawal.status)) {
       throw new Error("Only pending or processing withdrawals can be rejected.");
     }
-    const wallet = this.ensureWallet(withdrawal.userId, withdrawal.currency);
-    if (compare(wallet.lockedBalance, withdrawal.amount) < 0) {
-      throw new Error("Locked balance is lower than the withdrawal amount.");
+    const fundingSources = this.getWithdrawalFundingSources(withdrawal);
+    for (const source of fundingSources) {
+      const wallet = this.ensureWallet(withdrawal.userId, source.currency);
+      if (compare(wallet.lockedBalance, source.amount) < 0) {
+        throw new Error("Locked balance is lower than the withdrawal amount.");
+      }
     }
-    const availableBefore = wallet.availableBalance;
-    const lockedBefore = wallet.lockedBalance;
-    wallet.lockedBalance = subtract(wallet.lockedBalance, withdrawal.amount);
-    wallet.availableBalance = add(wallet.availableBalance, withdrawal.amount);
-    wallet.updatedAt = this.clock();
+
+    for (const source of fundingSources) {
+      const wallet = this.ensureWallet(withdrawal.userId, source.currency);
+      const availableBefore = wallet.availableBalance;
+      const lockedBefore = wallet.lockedBalance;
+      wallet.lockedBalance = subtract(wallet.lockedBalance, source.amount);
+      wallet.availableBalance = add(wallet.availableBalance, source.amount);
+      wallet.updatedAt = this.clock();
+      this.db.transactions.unshift({
+        id: this.idGenerator(12),
+        userId: withdrawal.userId,
+        type: "REVERSAL",
+        currency: source.currency,
+        amount: source.amount,
+        balanceBefore: availableBefore,
+        balanceAfter: wallet.availableBalance,
+        reference: withdrawal.id,
+        status: "APPROVED",
+        description: "Withdrawal rejected.",
+        createdBy: admin.id,
+        createdAt: this.clock(),
+        metadata: {
+          requestedCurrency: withdrawal.currency,
+          requestedAmount: withdrawal.amount,
+          lockedBalanceBefore: lockedBefore,
+          lockedBalanceAfter: wallet.lockedBalance,
+        },
+      });
+    }
     withdrawal.status = "REJECTED";
     withdrawal.rejectedAt = this.clock();
     withdrawal.rejectedBy = admin.id;
     withdrawal.adminNote = String(input.adminNote || "").trim();
-    this.db.transactions.unshift({
-      id: this.idGenerator(12),
+    this.createNotification({
       userId: withdrawal.userId,
-      type: "REVERSAL",
-      currency: withdrawal.currency,
-      amount: withdrawal.amount,
-      balanceBefore: availableBefore,
-      balanceAfter: wallet.availableBalance,
-      reference: withdrawal.id,
-      status: "APPROVED",
-      description: "Withdrawal rejected and reserved balance returned.",
-      createdBy: admin.id,
-      createdAt: this.clock(),
-      metadata: {
-        lockedBalanceBefore: lockedBefore,
-        lockedBalanceAfter: wallet.lockedBalance,
-      },
+      type: "WITHDRAWAL",
+      title: "Withdrawal rejected",
+      message: withdrawal.adminNote || "Your reserved funds were returned.",
+      entityType: "Withdrawal",
+      entityId: withdrawal.id,
     });
     this.audit(admin, "WITHDRAWAL_REJECTED", "Withdrawal", withdrawal.id, { amount: withdrawal.amount, currency: withdrawal.currency }, requestMeta);
     this.persist();
@@ -638,6 +913,12 @@ class FinancialService {
       totalUserBalance: walletTotals,
       pendingDeposits: this.db.deposits.filter((deposit) => deposit.status === "PENDING").length,
       pendingWithdrawals: this.db.withdrawals.filter((withdrawal) => withdrawal.status === "PENDING").length,
+      notifications: this.listNotifications(this.db.users.find((user) => user.role === "admin") || { role: "admin" }, { limit: 20 }),
+      settings: {
+        deposit: clone(this.db.systemSettings.deposit),
+        withdrawal: clone(this.db.systemSettings.withdrawal),
+        exchangeRate: clone(this.db.systemSettings.exchangeRate),
+      },
       todayPnl: this.getTodayPnl(),
       totalPnl: this.db.transactions
         .filter((transaction) => ["TRADING_PROFIT", "TRADING_LOSS"].includes(transaction.type))
@@ -662,6 +943,40 @@ class FinancialService {
       .reduce((sum, transaction) => add(sum, transaction.amount), "0");
   }
 
+  deleteFinanceHistory(admin, input = {}, requestMeta = {}) {
+    this.ensureState();
+    const transactionIds = new Set((input.transactionIds || []).map((id) => String(id || "").trim()).filter(Boolean));
+    const depositIds = new Set((input.depositIds || []).map((id) => String(id || "").trim()).filter(Boolean));
+    const withdrawalIds = new Set((input.withdrawalIds || []).map((id) => String(id || "").trim()).filter(Boolean));
+
+    if (!transactionIds.size && !depositIds.size && !withdrawalIds.size) {
+      throw new Error("Select at least one history item.");
+    }
+
+    const before = {
+      transactions: this.db.transactions.length,
+      deposits: this.db.deposits.length,
+      withdrawals: this.db.withdrawals.length,
+    };
+    this.db.transactions = this.db.transactions.filter((item) => !transactionIds.has(item.id));
+    this.db.deposits = this.db.deposits.filter((item) => !depositIds.has(item.id));
+    this.db.withdrawals = this.db.withdrawals.filter((item) => !withdrawalIds.has(item.id));
+
+    const deleted = {
+      transactions: before.transactions - this.db.transactions.length,
+      deposits: before.deposits - this.db.deposits.length,
+      withdrawals: before.withdrawals - this.db.withdrawals.length,
+    };
+    const deletedCount = deleted.transactions + deleted.deposits + deleted.withdrawals;
+    if (!deletedCount) {
+      throw new Error("Selected history was not found.");
+    }
+
+    this.audit(admin, "FINANCE_HISTORY_DELETED", "FinanceHistory", "bulk", deleted, requestMeta);
+    this.persist();
+    return { deletedCount, deleted };
+  }
+
   getDeposit(depositId) {
     const deposit = this.db.deposits.find((item) => item.id === depositId);
     if (!deposit) {
@@ -676,6 +991,16 @@ class FinancialService {
       throw new Error("Withdrawal request not found.");
     }
     return withdrawal;
+  }
+
+  getWithdrawalFundingSources(withdrawal) {
+    const sources = Array.isArray(withdrawal.fundingSources) && withdrawal.fundingSources.length
+      ? withdrawal.fundingSources
+      : [{ currency: withdrawal.currency, amount: withdrawal.amount }];
+    return sources.map((source) => ({
+      currency: normalizeCurrency(source.currency || withdrawal.currency),
+      amount: normalizeAmount(source.amount || withdrawal.amount, "Withdrawal funding amount"),
+    }));
   }
 
   changeWithdrawalStatus(admin, withdrawalId, status, input = {}, requestMeta = {}) {

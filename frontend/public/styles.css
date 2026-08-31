@@ -90,7 +90,8 @@ body[data-app-shell="dashboard"] .topbar {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -717,13 +718,19 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   border-radius: 18px;
   border: 1px solid var(--line);
   padding: 14px 16px;
   background: var(--input-bg);
   color: var(--text);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 78px;
 }
 
 .password-field {
@@ -1124,6 +1131,156 @@ body[data-theme="dark"] .section-loading-card {
     linear-gradient(135deg, #1e3a6d, #264b8b 60%, #34a88a 120%);
 }
 
+.dashboard-topbar {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  padding: 2px 2px 0;
+}
+
+.dashboard-topbar h2 {
+  margin: 0;
+  font-size: 1.08rem;
+  letter-spacing: 0;
+}
+
+.notification-wrap {
+  position: relative;
+}
+
+.icon-action.notification-button {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 16px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.12);
+}
+
+.icon-action.notification-button .nav-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.notification-panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(320px, calc(100vw - 28px));
+  padding: 12px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--modal-bg);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 10px;
+}
+
+.notification-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: var(--soft-surface);
+}
+
+.notification-item strong {
+  font-size: 0.92rem;
+}
+
+.notification-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.notification-time {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.fintech-card {
+  position: relative;
+  isolation: isolate;
+  min-height: 242px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 16% 10%, rgba(255, 255, 255, 0.28), transparent 8rem),
+    linear-gradient(138deg, #0f2442 0%, #1f6feb 48%, #12b981 120%);
+}
+
+.fintech-card-pattern {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.3;
+  background:
+    linear-gradient(115deg, transparent 0 42%, rgba(255, 255, 255, 0.32) 42% 43%, transparent 43% 100%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0 1px, transparent 1px 16px);
+}
+
+.fintech-card-top,
+.fintech-balance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fintech-card-top {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  font-weight: 900;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.card-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 16px;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.card-icon .nav-icon,
+.hero-action-btn .nav-icon,
+.micro-btn .nav-icon,
+.button-secondary .nav-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.fintech-balance-row {
+  margin-top: -2px;
+  color: rgba(255, 255, 255, 0.86);
+  font-weight: 800;
+}
+
 .hero-actions {
   display: flex;
   gap: 10px;
@@ -1137,6 +1294,10 @@ body[data-theme="dark"] .section-loading-card {
   font-weight: 800;
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .hero-action-btn.ghost {
@@ -1439,6 +1600,69 @@ body[data-theme="dark"] .section-loading-card {
 
 .admin-user-card {
   padding: 0;
+}
+
+.mini-ledger-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mini-ledger-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: var(--soft-surface);
+}
+
+.mini-ledger-row span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.inline-admin-form {
+  display: grid;
+  grid-template-columns: 98px 1fr;
+  gap: 8px;
+  align-items: end;
+  padding: 12px;
+  border-radius: 18px;
+  background: var(--soft-surface);
+}
+
+.inline-admin-form input,
+.inline-admin-form select,
+.inline-admin-form textarea {
+  border-radius: 14px;
+  padding: 11px 12px;
+}
+
+.inline-admin-form button {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.message-form {
+  grid-template-columns: 1fr;
+}
+
+.admin-finance-toolbar {
+  margin: 12px 0 4px;
+}
+
+.admin-finance-card {
+  align-items: flex-start;
+}
+
+.finance-history-checkbox {
+  flex: 0 0 auto;
+  padding-top: 2px;
 }
 
 .wallet-detail-list {
@@ -1888,11 +2112,15 @@ body[data-theme="dark"] .mirror-guide-pill {
   display: grid;
   gap: 6px;
   padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
   background: var(--soft-surface);
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.wallet-instructions p {
+  margin: 0;
 }
 
 .wallet-instructions strong,
@@ -1903,8 +2131,8 @@ body[data-theme="dark"] .mirror-guide-pill {
 
 .wallet-instructions code {
   padding: 8px;
-  border-radius: 6px;
-  background: var(--surface);
+  border-radius: 10px;
+  background: var(--input-bg);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
 

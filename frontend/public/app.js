@@ -98,7 +98,10 @@ const state = {
   users: [],
   adminDeposits: [],
   adminWithdrawals: [],
+  adminTransactions: [],
   financialDashboard: null,
+  notifications: [],
+  showNotifications: false,
   totalUsdt: 0,
   previousTotalUsdt: 0,
   totalNgn: 0,
@@ -134,6 +137,7 @@ const state = {
   expandedPendingOrderIds: [],
   expandedAdminUserIds: [],
   selectedHistoryTradeIds: [],
+  selectedFinanceHistoryIds: [],
   adminPasswordDrafts: {},
   revealedAdminPasswordIds: [],
   settingsDraft: {
@@ -542,7 +546,7 @@ function formatUsdt(value) {
 }
 
 function formatNaira(value) {
-  return `₦${Number(value || 0).toLocaleString(undefined, {
+  return `NGN ${Number(value || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -1018,6 +1022,14 @@ function icon(name) {
       '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="3"/>',
     eyeOff:
       '<path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.4 10.4 0 0 1 12 5c6 0 9.5 7 9.5 7a16.2 16.2 0 0 1-3.1 4"/><path d="M6.6 6.6C3.9 8.4 2.5 12 2.5 12s3.5 7 9.5 7a9.7 9.7 0 0 0 4.1-.9"/>',
+    bell:
+      '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+    bank:
+      '<path d="m3 10 9-6 9 6"/><path d="M5 10h14v9H5z"/><path d="M8 14v5"/><path d="M12 14v5"/><path d="M16 14v5"/>',
+    card:
+      '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18"/><path d="M7 15h4"/>',
+    gift:
+      '<path d="M20 12v8H4v-8"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H8.5a2 2 0 1 1 2-2c0 2-2.5 2-2.5 2"/><path d="M12 8h3.5a2 2 0 1 0-2-2c0 2 2.5 2 2.5 2"/>',
     settings:
       '<path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Zm8 3.3-.9-.5a7.5 7.5 0 0 0-.4-1l.5-1a1 1 0 0 0-.2-1.1l-1.2-1.2a1 1 0 0 0-1.1-.2l-1 .5c-.3-.2-.7-.3-1-.4L14 3h-4l-.4 1.1c-.3.1-.7.2-1 .4l-1-.5a1 1 0 0 0-1.1.2L5 5.4a1 1 0 0 0-.2 1.1l.5 1c-.2.3-.3.7-.4 1L4 12v.1l.9.4c.1.3.2.7.4 1l-.5 1a1 1 0 0 0 .2 1.1l1.2 1.2a1 1 0 0 0 1.1.2l1-.5c.3.2.7.3 1 .4L10 21h4l.4-1.1c.3-.1.7-.2 1-.4l1 .5a1 1 0 0 0 1.1-.2l1.2-1.2a1 1 0 0 0 .2-1.1l-.5-1c.2-.3.3-.7.4-1l.9-.4V12Z"/>',
     signals:
@@ -1307,27 +1319,59 @@ function getFinancialWallet(currency) {
   return (state.financialDashboard?.wallets || []).find((wallet) => wallet.currency === target) || null;
 }
 
+function getWalletFromList(wallets, currency) {
+  const target = String(currency || "USDT").toUpperCase();
+  return (wallets || []).find((wallet) => wallet.currency === target) || {
+    currency: target,
+    availableBalance: "0",
+    lockedBalance: "0",
+  };
+}
+
+function financeHistoryKey(kind, id) {
+  return `${kind}:${id}`;
+}
+
+function getFinanceHistoryKeys() {
+  return [
+    ...(state.adminDeposits || []).map((item) => financeHistoryKey("deposit", item.id)),
+    ...(state.adminWithdrawals || []).map((item) => financeHistoryKey("withdrawal", item.id)),
+    ...(state.adminTransactions || []).map((item) => financeHistoryKey("transaction", item.id)),
+  ];
+}
+
+function syncFinanceHistorySelection() {
+  const available = new Set(getFinanceHistoryKeys());
+  state.selectedFinanceHistoryIds = state.selectedFinanceHistoryIds.filter((key) => available.has(key));
+}
+
 async function loadFinancialDashboard() {
   if (!state.user) {
     state.financialDashboard = null;
+    state.notifications = [];
     return;
   }
   const endpoint = state.user.role === "admin" ? "/api/admin/dashboard" : "/api/user/dashboard";
   state.financialDashboard = await api(endpoint);
+  state.notifications = state.financialDashboard?.notifications || [];
 }
 
 async function loadAdminFinanceQueues() {
   if (!state.user || state.user.role !== "admin") {
     state.adminDeposits = [];
     state.adminWithdrawals = [];
+    state.adminTransactions = [];
     return;
   }
-  const [depositPayload, withdrawalPayload] = await Promise.all([
-    api("/api/admin/deposits?status=PENDING"),
+  const [depositPayload, withdrawalPayload, transactionPayload] = await Promise.all([
+    api("/api/admin/deposits"),
     api("/api/admin/withdrawals"),
+    api("/api/admin/transactions"),
   ]);
   state.adminDeposits = depositPayload.deposits || [];
   state.adminWithdrawals = withdrawalPayload.withdrawals || [];
+  state.adminTransactions = transactionPayload.transactions || [];
+  syncFinanceHistorySelection();
 }
 
 function formatMonthLabel(monthKey) {
@@ -1753,6 +1797,48 @@ function renderNotice() {
   return state.notice ? `<div class="floating-notice">${state.notice}</div>` : "";
 }
 
+function renderDashboardTopBar() {
+  if (!state.user) {
+    return "";
+  }
+  const notifications = state.notifications || [];
+  const unreadCount = notifications.filter((item) => !item.readAt).length;
+  return `
+    <header class="dashboard-topbar">
+      <div>
+        <strong>${escapeHtml(state.user.name || "Dashboard")}</strong>
+        <p class="muted-copy">${state.user.role === "admin" ? "Admin" : "Wallet"}</p>
+      </div>
+      <div class="notification-wrap">
+        <button class="icon-action notification-button" id="notification-toggle-btn" type="button" aria-label="Notifications" title="Notifications">
+          ${icon("bell")}
+          ${unreadCount ? `<span class="notification-badge">${unreadCount > 9 ? "9+" : unreadCount}</span>` : ""}
+        </button>
+        ${
+          state.showNotifications
+            ? `
+              <div class="notification-panel">
+                ${notifications
+                  .slice(0, 8)
+                  .map(
+                    (item) => `
+                      <div class="notification-item">
+                        <strong>${escapeHtml(item.title || item.type || "Update")}</strong>
+                        <p>${escapeHtml(item.message || "")}</p>
+                        <span class="notification-time">${item.createdAt ? new Date(item.createdAt).toLocaleString() : ""}</span>
+                      </div>
+                    `
+                  )
+                  .join("") || `<p class="muted-copy">No notifications.</p>`}
+              </div>
+            `
+            : ""
+        }
+      </div>
+    </header>
+  `;
+}
+
 function renderErrorModal() {
   if (!state.modalError) {
     return "";
@@ -1816,8 +1902,20 @@ function renderActionModal() {
         <button class="wallet-choice ${currency === "USDT" ? "active" : ""}" data-wallet-currency="USDT" type="button">USDT</button>
       </div>
     `;
+    const bankDetails = `
+      <div class="wallet-instructions">
+        <span>Bank</span>
+        <strong>${escapeHtml(depositSettings.bankName || "Bank not configured")}</strong>
+        <span>Account</span>
+        <code>${escapeHtml(depositSettings.accountNumber || "Not configured")}</code>
+        <span>Name</span>
+        <strong>${escapeHtml(depositSettings.accountName || "Not configured")}</strong>
+        ${depositSettings.bankNote ? `<p>${escapeHtml(depositSettings.bankNote)}</p>` : ""}
+      </div>
+    `;
     const depositForm = currency === "NGN"
       ? `
+        ${bankDetails}
         <label class="stack-label">
           <span>Amount (Naira)</span>
           <input id="wallet-amount-input" type="number" min="0" step="1" placeholder="Enter amount" />
@@ -3207,6 +3305,145 @@ async function submitAdminFinanceAction(kind, id) {
   }).catch((error) => showError(error.message));
 }
 
+async function submitAdminDepositSettings(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  await withLoading(async () => {
+    const payload = await api("/api/admin/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        deposit: {
+          bankName: data.bankName || "",
+          accountName: data.accountName || "",
+          accountNumber: data.accountNumber || "",
+          bankNote: data.bankNote || "",
+          usdtAddress: data.usdtAddress || "",
+          usdtNetwork: data.usdtNetwork || "TRC20",
+        },
+      }),
+    });
+    state.financialDashboard = {
+      ...(state.financialDashboard || {}),
+      settings: payload.settings,
+    };
+    render();
+    showNotice("Deposit accounts saved");
+  }).catch((error) => showError(error.message));
+}
+
+async function submitAdminUserBonus(form, userId) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  await withLoading(async () => {
+    const payload = await api(`/api/admin/users/${encodeURIComponent(userId)}/bonus`, {
+      method: "POST",
+      body: JSON.stringify({
+        currency: data.currency || "USDT",
+        amount: data.amount,
+        note: data.note || "Bonus",
+      }),
+    });
+    if (payload.profile?.user?.id) {
+      updateUserInStateUsers({
+        id: payload.profile.user.id,
+        ledgerWallets: payload.profile.wallets || [],
+        recentTransactions: payload.profile.recentTransactions || [],
+      });
+    }
+    await Promise.all([loadFinancialDashboard(), loadAdminFinanceQueues()]);
+    render();
+    showNotice("Bonus added");
+  }).catch((error) => showError(error.message));
+}
+
+async function submitAdminUserBalance(form, userId) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  await withLoading(async () => {
+    const payload = await api(`/api/admin/users/${encodeURIComponent(userId)}/balance`, {
+      method: "POST",
+      body: JSON.stringify({
+        currency: data.currency || "USDT",
+        amount: data.amount,
+        note: data.note || "Balance updated",
+      }),
+    });
+    if (payload.profile?.user?.id) {
+      updateUserInStateUsers({
+        id: payload.profile.user.id,
+        ledgerWallets: payload.profile.wallets || [],
+        recentTransactions: payload.profile.recentTransactions || [],
+      });
+    }
+    await Promise.all([loadFinancialDashboard(), loadAdminFinanceQueues()]);
+    render();
+    showNotice("Balance updated");
+  }).catch((error) => showError(error.message));
+}
+
+async function submitAdminUserMessage(form, userId) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  await withLoading(async () => {
+    await api(`/api/admin/users/${encodeURIComponent(userId)}/message`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: data.title || "Admin message",
+        message: data.message || "",
+      }),
+    });
+    form.reset();
+    render();
+    showNotice("Message sent");
+  }).catch((error) => showError(error.message));
+}
+
+function toggleFinanceHistorySelection(kind, id, selected) {
+  const key = financeHistoryKey(kind, id);
+  const next = new Set(state.selectedFinanceHistoryIds);
+  if (selected) {
+    next.add(key);
+  } else {
+    next.delete(key);
+  }
+  state.selectedFinanceHistoryIds = [...next];
+  render();
+}
+
+async function deleteSelectedFinanceHistory() {
+  const selected = state.selectedFinanceHistoryIds;
+  if (!selected.length) {
+    showError("Select history to delete.");
+    return;
+  }
+  if (!window.confirm(`Delete ${selected.length} finance record${selected.length === 1 ? "" : "s"}?`)) {
+    return;
+  }
+  const payload = {
+    depositIds: [],
+    withdrawalIds: [],
+    transactionIds: [],
+  };
+  selected.forEach((key) => {
+    const [kind, id] = key.split(":");
+    if (kind === "deposit") {
+      payload.depositIds.push(id);
+    }
+    if (kind === "withdrawal") {
+      payload.withdrawalIds.push(id);
+    }
+    if (kind === "transaction") {
+      payload.transactionIds.push(id);
+    }
+  });
+  await withLoading(async () => {
+    const result = await api("/api/admin/finance-history/delete", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.selectedFinanceHistoryIds = [];
+    await Promise.all([loadFinancialDashboard(), loadAdminFinanceQueues()]);
+    render();
+    showNotice(`${result.deletedCount || selected.length} record${(result.deletedCount || selected.length) === 1 ? "" : "s"} deleted`);
+  }).catch((error) => showError(error.message));
+}
+
 function renderBottomNav() {
   const tabs = [
     { id: "home", label: "Home", iconName: "home" },
@@ -3242,12 +3479,15 @@ function renderSummaryCard() {
   const portfolioBalance = isFuturesMode()
     ? Number(futuresAccount.totalMarginBalance || futuresAccount.totalWalletBalance || 0)
     : Number(state.totalUsdt || 0);
-  const investmentBalance = getInvestmentBalanceNgn();
   const investmentDailyReturn = getInvestmentDailyReturnNgn();
   const usdtWallet = getFinancialWallet("USDT");
+  const ngnWallet = getFinancialWallet("NGN");
   const ledgerUsdt = Number(usdtWallet?.availableBalance || 0);
   const lockedUsdt = Number(usdtWallet?.lockedBalance || 0);
+  const ledgerNgn = Number(ngnWallet?.availableBalance || 0);
+  const lockedNgn = Number(ngnWallet?.lockedBalance || 0);
   const configuredRate = Number(state.financialDashboard?.totalBalance?.usdtToNgnRate || state.usdtNgnRate || 0);
+  const investmentNgn = ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0);
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const todayValue = isFuturesMode()
@@ -3257,73 +3497,74 @@ function renderSummaryCard() {
     ? (portfolioBalance ? (todayValue / portfolioBalance) * 100 : 0)
     : Number(state.todayPnlPercent || 0);
   const todayTone = todayValue > 0 ? "positive" : todayValue < 0 ? "negative" : "neutral";
-  const chips =
-    state.user?.role === "admin"
-      ? [
-          isFuturesMode() ? "Futures view" : "Spot view",
-          `Mirrored users ${state.users.filter((user) => user.mirrorEnabled).length}`,
-          `Connected users ${state.users.filter((user) => user.bybitConnected || user.binanceConnected).length}`,
-        ]
-      : [
-          isFuturesMode() ? "Futures view" : "Spot view",
-          state.user?.mirrorEnabled ? "Mirror enabled" : "Mirror off",
-          state.user?.exchangeConnected ? `${exchangeLabel} connected` : "Setup needed",
-        ];
+  const chips = isAdmin
+    ? [
+        "Spot",
+        `Mirror ${state.users.filter((user) => user.mirrorEnabled).length}`,
+        `Linked ${state.users.filter((user) => user.bybitConnected || user.binanceConnected).length}`,
+      ]
+    : [
+        "Spot",
+        state.user?.mirrorEnabled ? "Mirror on" : "Mirror off",
+        state.user?.exchangeConnected ? exchangeLabel : "Setup",
+      ];
+
+  if (isAdmin) {
+    return `
+      <section class="summary-hero balance-slide netrue-card">
+        ${state.loadingFinancial ? renderSectionLoadingOverlay("Loading overview", "Syncing wallet totals") : ""}
+        <div>
+          <p class="eyebrow light">Admin</p>
+          <h2>${Number(adminStats.totalUsers || 0).toLocaleString()} Users</h2>
+          <p class="muted-bright">Deposits ${Number(adminStats.pendingDeposits || 0)} | Withdrawals ${Number(adminStats.pendingWithdrawals || 0)}</p>
+        </div>
+        <div class="hero-chip-row">
+          ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
+        </div>
+      </section>
+    `;
+  }
 
   return `
       <section class="balance-carousel">
-        <article class="summary-hero balance-slide">
-          ${accountLoading ? renderSectionLoadingOverlay("Loading balances", `Syncing your ${exchangeLabel} balance cards`) : ""}
-          <div>
-            <p class="eyebrow light">Live Account Balance</p>
-            <h2>${formatUsdt(portfolioBalance)}</h2>
-            <div class="hero-return-tags">
-              <span class="hero-chip today-return-chip">
-                <span>Today's return</span>
-                <strong class="${todayTone}">${todayValue >= 0 ? "+" : "-"}${formatUsdt(Math.abs(todayValue))} ${todayPercent >= 0 ? "+" : ""}${formatNumber(todayPercent, 2)}%</strong>
-              </span>
-            </div>
-            
+        <article class="summary-hero balance-slide fintech-card">
+          ${state.loadingFinancial ? renderSectionLoadingOverlay("Loading investment view", "Pulling your ledger wallet") : ""}
+          <div class="fintech-card-pattern" aria-hidden="true"></div>
+          <div class="fintech-card-top">
+            <span class="card-icon">${icon("card")}</span>
+            <span>Investment</span>
           </div>
-          <div class="hero-chip-row">
-            ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
+          <h2>${investmentNgn > 0 ? formatNaira(investmentNgn) : "--"}</h2>
+          <div class="fintech-balance-row">
+            <span>${formatUsdtUnit(ledgerUsdt)}</span>
+            <span>${formatNaira(ledgerNgn)}</span>
+          </div>
+          <p class="muted-bright">Today ${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))}</p>
+          <p class="muted-bright">Locked ${formatUsdtUnit(lockedUsdt)} | ${formatNaira(lockedNgn)}</p>
+          <div class="hero-actions">
+            <button class="hero-action-btn" id="netrue-deposit-btn" type="button">${icon("bank")} Deposit</button>
+            <button class="hero-action-btn ghost" id="netrue-withdraw-btn" type="button">${icon("download")} Withdraw</button>
           </div>
           <div class="carousel-hint" aria-hidden="true">
             <span class="carousel-bar active"></span>
             <span class="carousel-bar"></span>
           </div>
         </article>
-        <article class="summary-hero balance-slide netrue-card">
-          ${state.loadingFinancial ? renderSectionLoadingOverlay("Loading investment view", "Pulling your ledger wallet") : ""}
-          ${
-            isAdmin
-              ? `
-                <div>
-                  <p class="eyebrow light">Admin Overview</p>
-                  <h2>${Number(adminStats.totalUsers || 0).toLocaleString()} Users</h2>
-                  <p class="muted-bright">Active users: ${Number(adminStats.activeUsers || 0).toLocaleString()}.</p>
-                  <p class="muted-bright">Pending deposits: ${Number(adminStats.pendingDeposits || 0)}. Pending withdrawals: ${Number(adminStats.pendingWithdrawals || 0)}.</p>
-                </div>
-              `
-              : `
-                <div>
-                  <p class="eyebrow light">Investment Wallet</p>
-                  <h2>${ledgerUsdt > 0 ? formatUsdtUnit(ledgerUsdt) : "--"}</h2>
-                  <p class="muted-bright">${investmentBalance > 0 ? `${formatNaira(investmentBalance)} at ${formatNaira(configuredRate)} / USDT` : "Fund your wallet with a manual USDT deposit request."}</p>
-                  <p class="muted-bright">Today's trading performance: ${investmentDailyReturn ? formatNaira(investmentDailyReturn) : formatUsdtUnit(0)}. Locked: ${formatUsdtUnit(lockedUsdt)}.</p>
-                </div>
-              `
-          }
-          ${
-            state.user?.role === "user"
-              ? `
-                <div class="hero-actions">
-                  <button class="hero-action-btn" id="netrue-deposit-btn" type="button">Deposit</button>
-                  <button class="hero-action-btn ghost" id="netrue-withdraw-btn" type="button">Withdraw</button>
-                </div>
-              `
-              : ""
-          }
+        <article class="summary-hero balance-slide">
+          ${accountLoading ? renderSectionLoadingOverlay("Loading balances", `Syncing your ${exchangeLabel} balance cards`) : ""}
+          <div>
+            <p class="eyebrow light">${exchangeLabel}</p>
+            <h2>${formatUsdt(portfolioBalance)}</h2>
+            <div class="hero-return-tags">
+              <span class="hero-chip today-return-chip">
+                <span>Today</span>
+                <strong class="${todayTone}">${todayValue >= 0 ? "+" : "-"}${formatUsdt(Math.abs(todayValue))} ${todayPercent >= 0 ? "+" : ""}${formatNumber(todayPercent, 2)}%</strong>
+              </span>
+            </div>
+          </div>
+          <div class="hero-chip-row">
+            ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
+          </div>
         </article>
       </section>
   `;
@@ -4001,6 +4242,9 @@ function renderAdminUserCard(user) {
   const connectedExchanges = getConnectedExchanges(user);
   const revealPassword = state.revealedAdminPasswordIds.includes(user.id);
   const passwordDraft = getAdminPasswordDraft(user.id);
+  const usdtWallet = getWalletFromList(user.ledgerWallets, "USDT");
+  const ngnWallet = getWalletFromList(user.ledgerWallets, "NGN");
+  const recentTransactions = user.recentTransactions || [];
   return `
     <details class="trade-disclosure admin-user-card" data-admin-user-id="${user.id}" ${isExpanded ? "open" : ""}>
       <summary class="trade-summary-row">
@@ -4017,22 +4261,58 @@ function renderAdminUserCard(user) {
       <div class="trade-disclosure-body">
         <div class="trade-detail-grid">
           <div class="trade-detail-pill">
-            <span>Mirror</span>
-            <strong>${user.mirrorEnabled ? "Connected" : "Disconnected"}</strong>
+            <span>USDT</span>
+            <strong>${formatUsdtUnit(usdtWallet.availableBalance)}</strong>
           </div>
           <div class="trade-detail-pill">
-            <span>Preferred</span>
-            <strong>${getExchangeLabel(user.activeExchange || "bybit")}</strong>
+            <span>Naira</span>
+            <strong>${formatNaira(ngnWallet.availableBalance)}</strong>
           </div>
           <div class="trade-detail-pill">
-            <span>Created</span>
-            <strong>${new Date(user.createdAt).toLocaleDateString()}</strong>
+            <span>Locked</span>
+            <strong>${formatUsdtUnit(usdtWallet.lockedBalance)} / ${formatNaira(ngnWallet.lockedBalance)}</strong>
           </div>
         </div>
         <div class="trade-detail-lines">
-          <p class="muted-copy">Connected exchanges: ${connectedExchanges.length ? connectedExchanges.map((exchange) => exchange.label).join(" and ") : "None yet"}</p>
+          <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"} | ${getExchangeLabel(user.activeExchange || "bybit")} | ${user.createdAt ? new Date(user.createdAt).toLocaleDateString() : ""}</p>
+          <p class="muted-copy">Connected: ${connectedExchanges.length ? connectedExchanges.map((exchange) => exchange.label).join(" and ") : "None"}</p>
           ${renderWalletDetailsList(user.walletDetails || [], "This user's connected wallet balances will show here once they sync.")}
-          <p class="muted-copy">Stored passwords are hashed securely, so the current password cannot be viewed. Use the reset field below to set a new one.</p>
+          <div class="mini-ledger-list">
+            ${recentTransactions
+              .slice(0, 3)
+              .map(
+                (transaction) => `
+                  <div class="mini-ledger-row">
+                    <span>${escapeHtml(transaction.type || "TX")}</span>
+                    <strong>${formatCurrencyAmount(transaction.amount, transaction.currency)}</strong>
+                  </div>
+                `
+              )
+              .join("") || `<p class="muted-copy">No ledger history yet.</p>`}
+          </div>
+          <form class="inline-admin-form" data-admin-bonus-form="${user.id}">
+            <select name="currency" aria-label="Bonus currency">
+              <option value="USDT">USDT</option>
+              <option value="NGN">Naira</option>
+            </select>
+            <input name="amount" type="number" min="0" step="0.00000001" placeholder="Bonus" required />
+            <input name="note" type="text" placeholder="Note" />
+            <button class="micro-btn primary" type="submit">${icon("gift")} Add</button>
+          </form>
+          <form class="inline-admin-form" data-admin-balance-form="${user.id}">
+            <select name="currency" aria-label="Balance currency">
+              <option value="USDT">USDT</option>
+              <option value="NGN">Naira</option>
+            </select>
+            <input name="amount" type="number" min="0" step="0.00000001" placeholder="Set balance" required />
+            <input name="note" type="text" placeholder="Reason" />
+            <button class="micro-btn" type="submit">${icon("card")} Set</button>
+          </form>
+          <form class="inline-admin-form message-form" data-admin-message-form="${user.id}">
+            <input name="title" type="text" placeholder="Title" value="Admin message" />
+            <textarea name="message" rows="2" placeholder="Message" required></textarea>
+            <button class="micro-btn" type="submit">${icon("bell")} Send</button>
+          </form>
           <label>
             New password
             <input data-admin-password-input="${user.id}" type="${revealPassword ? "text" : "password"}" value="${escapeHtml(passwordDraft)}" placeholder="Set a new password" />
@@ -4186,8 +4466,15 @@ function renderCurrentUserWalletSummary() {
 function renderAdminDepositCard(deposit) {
   const currency = deposit.currency || "USDT";
   const reference = deposit.transactionHash || deposit.bankReference || "";
+  const historyKey = financeHistoryKey("deposit", deposit.id);
   return `
     <div class="asset-card admin-finance-card">
+      <label class="history-checkbox finance-history-checkbox" aria-label="Select deposit">
+        <input type="checkbox" data-finance-history-kind="deposit" data-finance-history-id="${deposit.id}" ${
+          state.selectedFinanceHistoryIds.includes(historyKey) ? "checked" : ""
+        } />
+        <span></span>
+      </label>
       <div>
         <strong>${escapeHtml(deposit.user?.name || "Unknown user")}</strong>
         <p class="muted-copy">${escapeHtml(deposit.user?.email || "")}</p>
@@ -4217,14 +4504,25 @@ function renderAdminWithdrawalCard(withdrawal) {
   const destinationCopy = destination.type === "NGN_BANK"
     ? `${destination.bankName || ""} ${destination.accountNumber || ""}`.trim()
     : `${destination.network || ""} ${destination.address || ""}`.trim();
+  const fundingCopy = (withdrawal.fundingSources || [])
+    .map((source) => formatCurrencyAmount(source.amount, source.currency))
+    .join(" + ");
+  const historyKey = financeHistoryKey("withdrawal", withdrawal.id);
   const canProcess = withdrawal.status === "PENDING";
   const canFinalize = ["PENDING", "PROCESSING"].includes(withdrawal.status);
   return `
     <div class="asset-card admin-finance-card">
+      <label class="history-checkbox finance-history-checkbox" aria-label="Select withdrawal">
+        <input type="checkbox" data-finance-history-kind="withdrawal" data-finance-history-id="${withdrawal.id}" ${
+          state.selectedFinanceHistoryIds.includes(historyKey) ? "checked" : ""
+        } />
+        <span></span>
+      </label>
       <div>
         <strong>${escapeHtml(withdrawal.user?.name || "Unknown user")}</strong>
         <p class="muted-copy">${escapeHtml(withdrawal.user?.email || "")}</p>
         <p class="muted-copy">${withdrawal.currency === "NGN" ? formatNaira(withdrawal.amount) : formatUsdtUnit(withdrawal.amount)}</p>
+        ${fundingCopy ? `<p class="muted-copy">From ${fundingCopy}</p>` : ""}
         <p class="muted-copy">${escapeHtml(destinationCopy || "Destination unavailable")}</p>
       </div>
       <div class="asset-values">
@@ -4246,27 +4544,64 @@ function renderAdminWithdrawalCard(withdrawal) {
   `;
 }
 
+function renderAdminTransactionCard(transaction) {
+  const historyKey = financeHistoryKey("transaction", transaction.id);
+  return `
+    <div class="asset-card admin-finance-card">
+      <label class="history-checkbox finance-history-checkbox" aria-label="Select transaction">
+        <input type="checkbox" data-finance-history-kind="transaction" data-finance-history-id="${transaction.id}" ${
+          state.selectedFinanceHistoryIds.includes(historyKey) ? "checked" : ""
+        } />
+        <span></span>
+      </label>
+      <div>
+        <strong>${escapeHtml(transaction.user?.name || "Unknown user")}</strong>
+        <p class="muted-copy">${escapeHtml(transaction.type || "Transaction")} | ${escapeHtml(transaction.status || "")}</p>
+        <p class="muted-copy">${escapeHtml(transaction.description || transaction.reference || "")}</p>
+      </div>
+      <div class="asset-values">
+        <strong>${formatCurrencyAmount(transaction.amount, transaction.currency)}</strong>
+        <p class="muted-copy">${transaction.createdAt ? new Date(transaction.createdAt).toLocaleString() : ""}</p>
+      </div>
+    </div>
+  `;
+}
+
 function renderAdminFinancePanel() {
   if (state.user.role !== "admin") {
     return "";
   }
+  const historyKeys = getFinanceHistoryKeys();
+  const selectedCount = state.selectedFinanceHistoryIds.length;
+  const allSelected = !!historyKeys.length && selectedCount === historyKeys.length;
   return `
     <section class="mobile-card${loadingClass(state.loadingAdminFinance)}">
       ${state.loadingAdminFinance ? renderSectionLoadingOverlay("Loading finance queue", "Checking pending deposits and withdrawals") : ""}
       <div class="section-head">
         <div>
-          <h3>Deposits & Withdrawals</h3>
-          <p class="muted-copy">Approvals create ledger entries and update wallet balances from the backend.</p>
+          <h3>Finance</h3>
+          <p class="muted-copy">Approve, review, or clear records.</p>
+        </div>
+      </div>
+      <div class="history-toolbar admin-finance-toolbar">
+        <p class="muted-copy">${selectedCount ? `${selectedCount} selected.` : "Select history to delete."}</p>
+        <div class="history-toolbar-actions">
+          <button id="finance-history-select-all-btn" class="text-link" type="button">${allSelected ? "Clear" : "Select all"}</button>
+          <button id="finance-history-delete-btn" class="mini-action danger" type="button" ${selectedCount ? "" : "disabled"}>Delete</button>
         </div>
       </div>
       <div class="card-list">
         <div>
-          <p class="eyebrow">Pending Deposits</p>
-          ${(state.adminDeposits || []).map(renderAdminDepositCard).join("") || `<p class="muted-copy">No pending deposits.</p>`}
+          <p class="eyebrow">Deposits</p>
+          ${(state.adminDeposits || []).map(renderAdminDepositCard).join("") || `<p class="muted-copy">No deposits yet.</p>`}
         </div>
         <div>
           <p class="eyebrow">Withdrawals</p>
           ${(state.adminWithdrawals || []).map(renderAdminWithdrawalCard).join("") || `<p class="muted-copy">No withdrawals yet.</p>`}
+        </div>
+        <div>
+          <p class="eyebrow">Ledger</p>
+          ${(state.adminTransactions || []).slice(0, 80).map(renderAdminTransactionCard).join("") || `<p class="muted-copy">No ledger records yet.</p>`}
         </div>
       </div>
     </section>
@@ -4281,6 +4616,8 @@ function renderSettingsPane() {
   const signalAutoTrade = state.signalAutoTrade || getDefaultSignalAutoTradeState();
   const signalAutoTradeSettings = signalAutoTrade.settings || {};
   const signalAutoTradeRuntime = signalAutoTrade.runtime || {};
+  const financeSettings = getFinancialSettings();
+  const depositSettings = financeSettings.deposit || {};
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -4355,6 +4692,23 @@ function renderSettingsPane() {
       ${
         state.user.role === "admin"
           ? `
+            <section class="mobile-card">
+              <div class="section-head">
+                <div>
+                  <h3>Deposit Accounts</h3>
+                  <p class="muted-copy">Details shown on user deposit forms.</p>
+                </div>
+              </div>
+              <form id="admin-deposit-settings-form" class="stack-form subtle-form">
+                <label>Bank <input name="bankName" value="${escapeHtml(depositSettings.bankName || "")}" placeholder="Bank name" /></label>
+                <label>Account name <input name="accountName" value="${escapeHtml(depositSettings.accountName || "")}" placeholder="Account name" /></label>
+                <label>Account number <input name="accountNumber" value="${escapeHtml(depositSettings.accountNumber || "")}" placeholder="Account number" inputmode="numeric" /></label>
+                <label>Bank note <textarea name="bankNote" rows="2" placeholder="Short note">${escapeHtml(depositSettings.bankNote || "")}</textarea></label>
+                <label>USDT address <input name="usdtAddress" value="${escapeHtml(depositSettings.usdtAddress || "")}" placeholder="Wallet address" /></label>
+                <label>USDT network <input name="usdtNetwork" value="${escapeHtml(depositSettings.usdtNetwork || "TRC20")}" placeholder="TRC20" /></label>
+                <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save accounts</button>
+              </form>
+            </section>
             <section class="mobile-card">
               <div class="section-head">
                 <div>
@@ -4614,6 +4968,7 @@ function renderDashboardShell() {
 
   app.innerHTML = `
     <section class="app-shell">
+      ${renderDashboardTopBar()}
       <section class="app-screen">
         ${paneMap[state.activeTab] || paneMap.home}
       </section>
@@ -4656,6 +5011,14 @@ function bindDashboardActions() {
   bindFuturesActions();
   bindAdminUserDisclosureToggles();
   bindSignalFeedActions();
+
+  const notificationButton = document.getElementById("notification-toggle-btn");
+  if (notificationButton) {
+    notificationButton.addEventListener("click", () => {
+      state.showNotifications = !state.showNotifications;
+      render();
+    });
+  }
 
   const exchangeSelectForm = document.getElementById("exchange-select-form");
   if (exchangeSelectForm) {
@@ -4747,6 +5110,57 @@ function bindDashboardActions() {
         render();
         showNotice(`Signal auto trade ${state.signalAutoTrade.settings.enabled ? "enabled" : "disabled"}`);
       }).catch((error) => showError(error.message));
+    });
+  }
+
+  const adminDepositSettingsForm = document.getElementById("admin-deposit-settings-form");
+  if (adminDepositSettingsForm) {
+    adminDepositSettingsForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitAdminDepositSettings(adminDepositSettingsForm);
+    });
+  }
+
+  document.querySelectorAll("[data-admin-bonus-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitAdminUserBonus(form, form.dataset.adminBonusForm);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-balance-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitAdminUserBalance(form, form.dataset.adminBalanceForm);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-message-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitAdminUserMessage(form, form.dataset.adminMessageForm);
+    });
+  });
+
+  document.querySelectorAll("[data-finance-history-id]").forEach((input) => {
+    input.addEventListener("change", () => {
+      toggleFinanceHistorySelection(input.dataset.financeHistoryKind, input.dataset.financeHistoryId, input.checked);
+    });
+  });
+
+  const financeHistorySelectAllButton = document.getElementById("finance-history-select-all-btn");
+  if (financeHistorySelectAllButton) {
+    financeHistorySelectAllButton.addEventListener("click", () => {
+      const keys = getFinanceHistoryKeys();
+      state.selectedFinanceHistoryIds = state.selectedFinanceHistoryIds.length === keys.length ? [] : keys;
+      render();
+    });
+  }
+
+  const financeHistoryDeleteButton = document.getElementById("finance-history-delete-btn");
+  if (financeHistoryDeleteButton) {
+    financeHistoryDeleteButton.addEventListener("click", () => {
+      deleteSelectedFinanceHistory();
     });
   }
 
@@ -4902,7 +5316,10 @@ function bindDashboardActions() {
       state.users = [];
       state.adminDeposits = [];
       state.adminWithdrawals = [];
+      state.adminTransactions = [];
       state.financialDashboard = null;
+      state.notifications = [];
+      state.showNotifications = false;
       state.totalUsdt = 0;
       state.previousTotalUsdt = 0;
       state.totalNgn = 0;
@@ -4948,6 +5365,7 @@ function bindDashboardActions() {
       state.expandedPendingOrderIds = [];
       state.expandedAdminUserIds = [];
       state.selectedHistoryTradeIds = [];
+      state.selectedFinanceHistoryIds = [];
       state.adminPasswordDrafts = {};
       state.revealedAdminPasswordIds = [];
       state.showSplash = false;

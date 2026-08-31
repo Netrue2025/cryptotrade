@@ -168,3 +168,77 @@ test("daily withdrawal limit is enforced", () => {
     /daily withdrawal limit/i
   );
 });
+
+test("admin bonus credits user wallet and creates notification", () => {
+  const { admin, service, user } = createHarness();
+  setWallet(service, user.id, "NGN", "2500");
+
+  const result = service.addBonus(admin, user.id, {
+    currency: "NGN",
+    amount: "7500",
+    note: "Welcome bonus",
+  });
+
+  assert.equal(service.ensureWallet(user.id, "NGN").availableBalance, "10000");
+  assert.equal(result.transaction.type, "BONUS");
+  assert.equal(result.profile.wallets.find((wallet) => wallet.currency === "NGN").availableBalance, "10000");
+  assert.equal(service.listNotifications(user)[0].type, "BONUS");
+});
+
+test("admin can set a user balance", () => {
+  const { admin, service, user } = createHarness();
+  setWallet(service, user.id, "USDT", "15");
+
+  const result = service.setUserBalance(admin, user.id, {
+    currency: "USDT",
+    amount: "42",
+    note: "Correction",
+  });
+
+  assert.equal(service.ensureWallet(user.id, "USDT").availableBalance, "42");
+  assert.equal(result.transaction.type, "BALANCE_ADJUSTMENT");
+  assert.equal(result.transaction.amount, "27");
+  assert.equal(service.listNotifications(user)[0].type, "BALANCE");
+});
+
+test("USDT withdrawal can reserve NGN equivalent when USDT wallet is short", () => {
+  const { service, user } = createHarness();
+  setWallet(service, user.id, "USDT", "5");
+  setWallet(service, user.id, "NGN", "32000");
+
+  const withdrawal = service.createWithdrawal(user, {
+    amount: "25",
+    currency: "USDT",
+    destination: {
+      address: "TUserWalletAddress",
+      network: "TRC20",
+    },
+  });
+
+  assert.deepEqual(withdrawal.fundingSources, [
+    { currency: "USDT", amount: "5" },
+    { currency: "NGN", amount: "32000" },
+  ]);
+  assert.equal(service.ensureWallet(user.id, "USDT").availableBalance, "0");
+  assert.equal(service.ensureWallet(user.id, "USDT").lockedBalance, "5");
+  assert.equal(service.ensureWallet(user.id, "NGN").availableBalance, "0");
+  assert.equal(service.ensureWallet(user.id, "NGN").lockedBalance, "32000");
+});
+
+test("admin can delete selected finance history records", () => {
+  const { admin, service, user } = createHarness();
+  setWallet(service, user.id, "USDT", "100");
+
+  const deposit = service.createDeposit(user, { amount: "10", transactionHash: "0xabc" });
+  service.approveDeposit(admin, deposit.id);
+  const transactionId = service.getTransactions(user.id)[0].id;
+
+  const result = service.deleteFinanceHistory(admin, {
+    depositIds: [deposit.id],
+    transactionIds: [transactionId],
+  });
+
+  assert.equal(result.deletedCount, 2);
+  assert.equal(service.listDeposits(admin).some((item) => item.id === deposit.id), false);
+  assert.equal(service.listTransactions(admin).some((item) => item.id === transactionId), false);
+});
