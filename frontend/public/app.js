@@ -594,8 +594,10 @@ function formatRecordEquivalent(record, currency = "USDT") {
   const displayAmounts = record?.displayAmounts || record?.metadata?.displayAmounts || null;
   const targetCurrency = sourceCurrency === "NGN" ? "USDT" : "NGN";
   const targetAmount = displayAmounts?.[targetCurrency];
+  const isNegative = String(record?.amount || "").trim().startsWith("-");
   if (targetAmount !== undefined && targetAmount !== null && targetAmount !== "") {
-    return formatCurrencyAmount(targetAmount, targetCurrency);
+    const signedAmount = isNegative && !String(targetAmount).startsWith("-") ? `-${targetAmount}` : targetAmount;
+    return formatCurrencyAmount(signedAmount, targetCurrency);
   }
   return formatEquivalentAmount(record?.amount || 0, sourceCurrency);
 }
@@ -1316,7 +1318,8 @@ function getCurrentTradeSummary() {
   const live = getSymbolData(symbol);
   const effectivePrice = Number(tradeDraft.price || live.price || 0);
   const amount = Number(tradeDraft.quantity || 0);
-  const total = tradeDraft.quoteOrderQty
+  const canUseQuoteTotal = tradeDraft.side === "BUY" && tradeDraft.type === "MARKET";
+  const total = canUseQuoteTotal && tradeDraft.quoteOrderQty
     ? Number(tradeDraft.quoteOrderQty || 0)
     : effectivePrice * amount;
   const baseBalance = getBalanceForAsset(baseAsset)?.total || 0;
@@ -3584,14 +3587,10 @@ function renderSummaryCard() {
   const usdtWallet = getFinancialWallet("USDT");
   const ngnWallet = getFinancialWallet("NGN");
   const ledgerUsdt = Number(usdtWallet?.availableBalance || 0);
-  const lockedUsdt = Number(usdtWallet?.lockedBalance || 0);
   const ledgerNgn = Number(ngnWallet?.availableBalance || 0);
-  const lockedNgn = Number(ngnWallet?.lockedBalance || 0);
   const configuredRate = getUsdtToNgnRate();
   const investmentNgn = Number(state.financialDashboard?.totalBalance?.ngnEquivalent || ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0));
   const investmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
-  const lockedNgnEquivalent = Number(state.financialDashboard?.totalBalance?.lockedNgnEquivalent || lockedNgn + (configuredRate ? lockedUsdt * configuredRate : 0));
-  const lockedUsdtEquivalent = Number(state.financialDashboard?.totalBalance?.lockedUsdt || lockedUsdt + (configuredRate ? lockedNgn / configuredRate : 0));
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const todayValue = isFuturesMode()
@@ -3663,7 +3662,6 @@ function renderSummaryCard() {
           <p class="muted-bright">
             P&L <span class="${userPnlTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))} ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
           </p>
-          <p class="muted-bright">Locked ${formatUsdtUnit(lockedUsdtEquivalent)} | ${formatNaira(lockedNgnEquivalent)}</p>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">${icon("bank")} Deposit</button>
             <button class="hero-action-btn ghost" id="netrue-withdraw-btn" type="button">${icon("download")} Withdraw</button>
@@ -4962,11 +4960,52 @@ function renderProfitLossReportCard() {
   `;
 }
 
+function renderWalletHistoryRow(item) {
+  const amount = Number(item.amount || 0);
+  const currency = item.currency || "USDT";
+  const equivalent = formatRecordEquivalent(item, currency);
+  const tone = amount > 0 ? "positive" : amount < 0 ? "negative" : "neutral";
+  return `
+    <div class="asset-card wallet-history-row">
+      <div>
+        <strong>${escapeHtml(item.description || item.type || "Wallet")}</strong>
+        <p class="muted-copy">${escapeHtml(item.status || "")}${item.createdAt ? ` | ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
+        ${equivalent ? `<p class="muted-copy">Eq ${equivalent}</p>` : ""}
+      </div>
+      <div class="asset-values">
+        <strong class="${tone}">${amount >= 0 ? "+" : "-"}${formatCurrencyAmount(Math.abs(amount), currency)}</strong>
+        <p class="muted-copy">${escapeHtml(item.kind || "")}</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderWalletHistorySection() {
+  const walletHistory = state.financialDashboard?.walletHistory || [];
+  if (!walletHistory.length) {
+    return "";
+  }
+  return `
+    <section class="mobile-card">
+      <div class="section-head">
+        <div>
+          <h3>Wallet History</h3>
+          <p class="muted-copy">Deposits, withdrawals, and ledger updates.</p>
+        </div>
+      </div>
+      <div class="compact-list">
+        ${walletHistory.map(renderWalletHistoryRow).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderHistoryContent() {
   const trades = getHistoryTrades();
   const canClearHistory = state.user?.role === "admin";
   return `
     <div class="card-list">
+      ${renderWalletHistorySection()}
       <section class="mobile-card">
         <div class="section-head">
           <div>
@@ -5610,6 +5649,10 @@ function updateTradeDraft(patch) {
     ...tradeDraft,
     ...patch,
   };
+
+  if (tradeDraft.side === "SELL") {
+    tradeDraft.quoteOrderQty = "";
+  }
 }
 
 function applyAllocation(percent) {
@@ -5650,7 +5693,7 @@ async function submitTrade() {
     side: tradeDraft.side,
     type: tradeDraft.type,
     quantity: tradeDraft.quantity,
-    quoteOrderQty: tradeDraft.type === "MARKET" ? tradeDraft.quoteOrderQty : "",
+    quoteOrderQty: tradeDraft.type === "MARKET" && tradeDraft.side === "BUY" ? tradeDraft.quoteOrderQty : "",
     price: tradeDraft.type === "LIMIT" ? tradeDraft.price : "",
     takeProfitPrice: tradeDraft.takeProfitPrice,
   };
@@ -5809,13 +5852,17 @@ function bindTradeTicketActions() {
   if (priceInput) priceInput.addEventListener("input", () => updateTradeDraft({ price: priceInput.value, quoteOrderQty: "" }));
   if (quantityInput) quantityInput.addEventListener("input", () => updateTradeDraft({ quantity: quantityInput.value, quoteOrderQty: "" }));
   if (totalInput) totalInput.addEventListener("input", () => {
-    if (tradeDraft.type === "MARKET") {
+    const summary = getCurrentTradeSummary();
+    const total = Number(totalInput.value || 0);
+    const price = Number(tradeDraft.price || summary.live.price || 0);
+
+    if (tradeDraft.type === "MARKET" && tradeDraft.side === "BUY") {
       updateTradeDraft({ quoteOrderQty: totalInput.value });
     } else {
-      const summary = getCurrentTradeSummary();
-      const total = Number(totalInput.value || 0);
-      const price = Number(tradeDraft.price || summary.live.price || 0);
-      updateTradeDraft({ quantity: price ? String(total / price) : tradeDraft.quantity });
+      updateTradeDraft({
+        quantity: price ? String(total / price) : tradeDraft.quantity,
+        quoteOrderQty: "",
+      });
     }
   });
   if (takeProfitInput) takeProfitInput.addEventListener("input", () => updateTradeDraft({ takeProfitPrice: takeProfitInput.value }));
@@ -5828,7 +5875,7 @@ function bindTradeTicketActions() {
 
   document.querySelectorAll("[data-side]").forEach((button) => {
     button.addEventListener("click", () => {
-      updateTradeDraft({ side: button.dataset.side });
+      updateTradeDraft({ side: button.dataset.side, quoteOrderQty: "" });
       render();
     });
   });
