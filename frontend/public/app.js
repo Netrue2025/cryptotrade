@@ -430,11 +430,11 @@ function toggleSelectAllSignals() {
 async function api(path, options = {}) {
   const response = await fetch(toApiUrl(path), {
     credentials: "include",
+    ...options,
     headers: {
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
-    ...options,
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -5366,7 +5366,7 @@ function bindDashboardActions() {
         : {
             bankName: document.getElementById("wallet-bank-input")?.value?.trim() || "",
             accountName: document.getElementById("wallet-account-name-input")?.value?.trim() || "",
-            accountNumber: document.getElementById("wallet-account-input")?.value?.replace(/\s+/g, "").trim() || "",
+            accountNumber: document.getElementById("wallet-account-input")?.value?.replace(/\D/g, "").trim() || "",
           };
 
       if (!amount || Number(amount) <= 0) {
