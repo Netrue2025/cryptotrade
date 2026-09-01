@@ -96,6 +96,7 @@ const state = {
   expandedFuturesOrderIds: [],
   reportPeriod: "days",
   users: [],
+  adminDepositSettingsDraft: null,
   adminDeposits: [],
   adminWithdrawals: [],
   adminTransactions: [],
@@ -383,6 +384,15 @@ function refreshSettingsPaneDom() {
     return;
   }
 
+  const activeElement = document.activeElement;
+  if (
+    activeElement &&
+    activeElement.closest("form") &&
+    ["INPUT", "SELECT", "TEXTAREA"].includes(activeElement.tagName)
+  ) {
+    return;
+  }
+
   render();
 }
 
@@ -491,6 +501,13 @@ function showActionModal(modal) {
   stopSignalChartRefreshTimer();
   state.actionModal = modal;
   render();
+}
+
+async function openWalletActionModal(type) {
+  await withLoading(async () => {
+    await loadFinancialDashboard();
+    showActionModal({ type, currency: "" });
+  }).catch((error) => showError(error.message));
 }
 
 function clearActionModal() {
@@ -1347,7 +1364,9 @@ function getInvestmentBalanceNgn() {
 }
 
 function getInvestmentDailyReturnNgn() {
-  return Number(state.financialDashboard?.performance?.todayUsdt || 0) * getUsdtToNgnRate();
+  const performanceValue = Number(state.financialDashboard?.performance?.todayUsdt || 0);
+  const mirrorValue = Number(state.financialDashboard?.mirrorPnl?.amountUsdt || 0);
+  return (performanceValue || mirrorValue) * getUsdtToNgnRate();
 }
 
 function getFinancialSettings() {
@@ -3372,6 +3391,7 @@ async function submitAdminDepositSettings(form) {
       ...(state.financialDashboard || {}),
       settings: payload.settings,
     };
+    state.adminDepositSettingsDraft = null;
     render();
     showNotice("Deposit accounts saved");
   }).catch((error) => showError(error.message));
@@ -4746,6 +4766,9 @@ function renderSettingsPane() {
   const financeSettings = getFinancialSettings();
   const depositSettings = financeSettings.deposit || {};
   const exchangeRateSettings = financeSettings.exchangeRate || {};
+  const adminDepositSettingsDraft = state.adminDepositSettingsDraft || {};
+  const depositSettingValue = (key, fallback = "") =>
+    adminDepositSettingsDraft[key] !== undefined ? adminDepositSettingsDraft[key] : fallback;
   return `
       <section class="mobile-card">
         <div class="section-head">
@@ -4828,13 +4851,13 @@ function renderSettingsPane() {
                 </div>
               </div>
               <form id="admin-deposit-settings-form" class="stack-form subtle-form">
-                <label>Bank <input name="bankName" value="${escapeHtml(depositSettings.bankName || "")}" placeholder="Bank name" /></label>
-                <label>Account name <input name="accountName" value="${escapeHtml(depositSettings.accountName || "")}" placeholder="Account name" /></label>
-                <label>Account number <input name="accountNumber" value="${escapeHtml(depositSettings.accountNumber || "")}" placeholder="Account number" inputmode="numeric" /></label>
-                <label>Bank note <textarea name="bankNote" rows="2" placeholder="Short note">${escapeHtml(depositSettings.bankNote || "")}</textarea></label>
-                <label>USDT address <input name="usdtAddress" value="${escapeHtml(depositSettings.usdtAddress || "")}" placeholder="Wallet address" /></label>
-                <label>USDT network <input name="usdtNetwork" value="${escapeHtml(depositSettings.usdtNetwork || "TRC20")}" placeholder="TRC20" /></label>
-                <label>USDT to Naira <input name="usdtToNgn" type="number" min="1" step="0.01" value="${escapeHtml(exchangeRateSettings.usdtToNgn || getUsdtToNgnRate() || "")}" placeholder="1600" /></label>
+                <label>Bank <input name="bankName" value="${escapeHtml(depositSettingValue("bankName", depositSettings.bankName || ""))}" placeholder="Bank name" /></label>
+                <label>Account name <input name="accountName" value="${escapeHtml(depositSettingValue("accountName", depositSettings.accountName || ""))}" placeholder="Account name" /></label>
+                <label>Account number <input name="accountNumber" value="${escapeHtml(depositSettingValue("accountNumber", depositSettings.accountNumber || ""))}" placeholder="Account number" inputmode="numeric" /></label>
+                <label>Bank note <textarea name="bankNote" rows="2" placeholder="Short note">${escapeHtml(depositSettingValue("bankNote", depositSettings.bankNote || ""))}</textarea></label>
+                <label>USDT address <input name="usdtAddress" value="${escapeHtml(depositSettingValue("usdtAddress", depositSettings.usdtAddress || ""))}" placeholder="Wallet address" /></label>
+                <label>USDT network <input name="usdtNetwork" value="${escapeHtml(depositSettingValue("usdtNetwork", depositSettings.usdtNetwork || "TRC20"))}" placeholder="TRC20" /></label>
+                <label>USDT to Naira <input name="usdtToNgn" type="number" min="1" step="0.01" value="${escapeHtml(depositSettingValue("usdtToNgn", exchangeRateSettings.usdtToNgn || getUsdtToNgnRate() || ""))}" placeholder="1600" /></label>
                 <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save</button>
               </form>
             </section>
@@ -5291,6 +5314,11 @@ function bindDashboardActions() {
 
   const adminDepositSettingsForm = document.getElementById("admin-deposit-settings-form");
   if (adminDepositSettingsForm) {
+    const updateAdminDepositSettingsDraft = () => {
+      state.adminDepositSettingsDraft = Object.fromEntries(new FormData(adminDepositSettingsForm).entries());
+    };
+    adminDepositSettingsForm.addEventListener("input", updateAdminDepositSettingsDraft);
+    adminDepositSettingsForm.addEventListener("change", updateAdminDepositSettingsDraft);
     adminDepositSettingsForm.addEventListener("submit", (event) => {
       event.preventDefault();
       submitAdminDepositSettings(adminDepositSettingsForm);
@@ -5358,12 +5386,12 @@ function bindDashboardActions() {
 
   const depositButton = document.getElementById("netrue-deposit-btn");
   if (depositButton) {
-    depositButton.addEventListener("click", () => showActionModal({ type: "deposit", currency: "" }));
+    depositButton.addEventListener("click", () => openWalletActionModal("deposit"));
   }
 
   const withdrawButton = document.getElementById("netrue-withdraw-btn");
   if (withdrawButton) {
-    withdrawButton.addEventListener("click", () => showActionModal({ type: "withdraw", currency: "" }));
+    withdrawButton.addEventListener("click", () => openWalletActionModal("withdraw"));
   }
 
   document.querySelectorAll("[data-wallet-currency]").forEach((button) => {
