@@ -3734,6 +3734,26 @@ async function submitAdminUserMessage(form, userId) {
   }).catch((error) => showError(error.message));
 }
 
+async function submitAdminUserTradeJoin(form, userId) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  if (!data.tradeId) {
+    showError("Select an open trade.");
+    return;
+  }
+
+  await withLoading(async () => {
+    const payload = await api(`/api/admin/users/${encodeURIComponent(userId)}/trades/${encodeURIComponent(data.tradeId)}/join`, {
+      method: "POST",
+      body: JSON.stringify({ amountUsdt: data.amountUsdt }),
+    });
+    if (payload.user?.id) {
+      updateUserInStateUsers(payload.user);
+    }
+    await loadDashboardData();
+    showNotice("User added to trade");
+  }).catch((error) => showError(error.message));
+}
+
 function toggleFinanceHistorySelection(kind, id, selected) {
   const key = financeHistoryKey(kind, id);
   const next = new Set(state.selectedFinanceHistoryIds);
@@ -4644,6 +4664,16 @@ function renderOpenOrdersSection() {
   `;
 }
 
+function getAdminTradeOptionsForUsers() {
+  return (state.trades || [])
+    .filter((trade) => ["OPEN", "PENDING"].includes(String(trade.lifecycleStatus || "").toUpperCase()))
+    .map((trade) => ({
+      ...trade,
+      isJoinable: String(trade.lifecycleStatus || "").toUpperCase() === "OPEN",
+    }))
+    .sort((a, b) => Number(b.isJoinable) - Number(a.isJoinable));
+}
+
 function renderAdminUserCard(user) {
   const isExpanded = state.expandedAdminUserIds.includes(user.id);
   const connectedExchanges = getConnectedExchanges(user);
@@ -4657,6 +4687,7 @@ function renderAdminUserCard(user) {
   const liveNgn = Number(totalBalance.liveNgnEquivalent || totalBalance.ngnEquivalent || ngnWallet.availableBalance || 0);
   const livePnl = Number(financeSummary.performance?.todayUsdt || financeSummary.mirrorPnl?.amountUsdt || 0);
   const recentTransactions = user.recentTransactions || [];
+  const tradeOptions = getAdminTradeOptionsForUsers();
   return `
     <details class="trade-disclosure admin-user-card" data-admin-user-id="${user.id}" ${isExpanded ? "open" : ""}>
       <summary class="trade-summary-row">
@@ -4713,6 +4744,25 @@ function renderAdminUserCard(user) {
             <input name="amount" type="number" min="0" step="0.00000001" placeholder="Bonus" required />
             <input name="note" type="text" placeholder="Note" />
             <button class="micro-btn primary" type="submit">${icon("gift")} Add</button>
+          </form>
+          <form class="inline-admin-form" data-admin-user-trade-form="${user.id}">
+            <select name="tradeId" aria-label="Trade">
+              ${
+                tradeOptions.length
+                  ? tradeOptions
+                      .map(
+                        (trade) => `
+                          <option value="${trade.id}" ${trade.isJoinable ? "" : "disabled"}>
+                            ${trade.symbol} ${trade.isJoinable ? "Open" : "Queue"}
+                          </option>
+                        `
+                      )
+                      .join("")
+                  : `<option value="">No open trade</option>`
+              }
+            </select>
+            <input name="amountUsdt" type="number" min="0" step="0.00000001" placeholder="USDT" required />
+            <button class="micro-btn primary" type="submit" ${tradeOptions.some((trade) => trade.isJoinable) ? "" : "disabled"}>${icon("signals")} Join</button>
           </form>
           <form class="inline-admin-form message-form" data-admin-message-form="${user.id}">
             <input name="title" type="text" placeholder="Title" value="Admin message" />
@@ -5762,6 +5812,13 @@ function bindDashboardActions() {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       submitAdminUserMessage(form, form.dataset.adminMessageForm);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-user-trade-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitAdminUserTradeJoin(form, form.dataset.adminUserTradeForm);
     });
   });
 
