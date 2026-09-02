@@ -515,6 +515,10 @@ function showActionModal(modal) {
 async function openWalletActionModal(type) {
   await withLoading(async () => {
     await loadFinancialDashboard();
+    if (type === "withdraw" && getActiveInvestmentRecords().length) {
+      showActionModal({ type: "withdraw-blocked" });
+      return;
+    }
     showActionModal({ type, currency: "" });
   }).catch((error) => showError(error.message));
 }
@@ -1410,6 +1414,24 @@ function getUserDynamicPnlUsdt() {
   return Number(state.financialDashboard?.performance?.todayUsdt || state.financialDashboard?.mirrorPnl?.amountUsdt || 0);
 }
 
+function getActiveInvestmentRecords() {
+  const fromDashboard = state.financialDashboard?.activeInvestments || [];
+  const fromTrades = (state.trades || [])
+    .map((trade) => trade.userInvestment)
+    .filter((investment) => investment?.status === "ACTIVE");
+  const byId = new Map();
+  [...fromDashboard, ...fromTrades].forEach((investment) => {
+    if (investment?.id) {
+      byId.set(investment.id, investment);
+    }
+  });
+  return [...byId.values()];
+}
+
+function getUserLockedInvestmentUsdt() {
+  return getActiveInvestmentRecords().reduce((sum, investment) => sum + Number(investment.amountUsdt || 0), 0);
+}
+
 function getInvestmentDailyReturnNgn() {
   if (state.user?.role === "user") {
     return getUserDynamicPnlUsdt() * getUsdtToNgnRate();
@@ -2032,6 +2054,24 @@ function renderActionModal() {
     `;
   }
 
+  if (state.actionModal.type === "withdraw-blocked") {
+    const activeCount = getActiveInvestmentRecords().length;
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card action-modal-card">
+          <button class="modal-close" id="action-modal-close-btn" type="button">x</button>
+          <p class="modal-eyebrow neutral">Withdraw</p>
+          <h3>Stop open trades first</h3>
+          <p class="modal-text">Please stop ${activeCount > 1 ? "all open trades" : "your open trade"} before withdrawal.</p>
+          <div class="modal-actions">
+            <button class="button-secondary" id="action-modal-cancel-btn" type="button">Close</button>
+            <button class="button-primary shimmer-button" id="withdraw-blocked-signal-btn" type="button">View trades</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   if (state.actionModal.type === "admin-balance") {
     const user = state.users.find((item) => item.id === state.actionModal.userId);
     if (!user) {
@@ -2501,6 +2541,15 @@ function bindModalActions() {
   const actionCancelButton = document.getElementById("action-modal-cancel-btn");
   if (actionCancelButton) {
     actionCancelButton.addEventListener("click", clearActionModal);
+  }
+
+  const blockedSignalButton = document.getElementById("withdraw-blocked-signal-btn");
+  if (blockedSignalButton) {
+    blockedSignalButton.addEventListener("click", () => {
+      state.actionModal = null;
+      state.activeTab = "signals";
+      render();
+    });
   }
 
   if (state.actionModal?.type === "signal-chart" && state.actionModal.chartPayload && window.SignalPage?.mountSignalChart) {
@@ -3823,6 +3872,7 @@ function renderSummaryCard() {
   const baseInvestmentNgn = Number(state.financialDashboard?.totalBalance?.ngnEquivalent || ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0));
   const baseInvestmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
   const userDynamicPnlUsdt = getUserDynamicPnlUsdt();
+  const lockedInvestmentUsdt = getUserLockedInvestmentUsdt();
   const investmentNgn = isAdmin ? baseInvestmentNgn : baseInvestmentNgn + (configuredRate ? userDynamicPnlUsdt * configuredRate : 0);
   const investmentUsdt = isAdmin ? baseInvestmentUsdt : baseInvestmentUsdt + userDynamicPnlUsdt;
   const accountLoading = state.loadingAccount;
@@ -3835,7 +3885,8 @@ function renderSummaryCard() {
     : Number(state.todayPnlPercent || 0);
   const todayTone = todayValue > 0 ? "positive" : todayValue < 0 ? "negative" : "neutral";
   const userMirroredPnlPercentage = Number(state.financialDashboard?.performance?.todayPercentage || 0);
-  const userPnlTone = investmentDailyReturn > 0 ? "positive" : investmentDailyReturn < 0 ? "negative" : "neutral";
+  const userBalanceTone = userDynamicPnlUsdt < 0 ? "balance-main-loss" : "balance-main-profit";
+  const userCardPnlTone = userDynamicPnlUsdt < 0 ? "card-pnl-loss" : "card-pnl-profit";
   const chips = isAdmin
     ? [
         "Spot",
@@ -3888,13 +3939,14 @@ function renderSummaryCard() {
             <span class="card-icon">${icon("card")}</span>
             <span>Investment</span>
           </div>
-          <h2>${investmentNgn > 0 ? formatNaira(investmentNgn) : "--"}</h2>
+          <h2 class="${userBalanceTone}">${investmentNgn > 0 ? formatNaira(investmentNgn) : "--"}</h2>
           <div class="fintech-balance-row">
             <span>${formatUsdtUnit(investmentUsdt)}</span>
             <span>${formatNaira(investmentNgn)}</span>
           </div>
+          ${lockedInvestmentUsdt > 0 ? `<p class="locked-investment-line">Locked ${formatUsdtUnit(lockedInvestmentUsdt)}${configuredRate ? ` | ${formatNaira(lockedInvestmentUsdt * configuredRate)}` : ""}</p>` : ""}
           <p class="muted-bright">
-            P&L <span class="${userPnlTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))} ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
+            P&L <span class="${userCardPnlTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))} ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
           </p>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">${icon("bank")} Deposit</button>
