@@ -445,6 +445,11 @@ button {
   color: #16a767;
 }
 
+.signal-strategy-badge.queue {
+  background: rgba(240, 169, 74, 0.16);
+  color: var(--warning);
+}
+
 .signal-confidence {
   margin: 0;
   color: var(--muted);
@@ -1380,6 +1385,16 @@ body[data-theme="dark"] .section-loading-card {
   font-size: 0.88rem;
 }
 
+.fintech-pnl-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
 .balance-privacy-toggle.is-hidden h2,
 .balance-privacy-toggle.is-hidden .fintech-subline {
   filter: blur(7px);
@@ -1437,11 +1452,13 @@ body[data-theme="dark"] .section-loading-card {
 }
 
 .card-pnl-profit {
-  color: #fff;
+  color: #16c47f;
+  background: rgba(22, 196, 127, 0.16);
 }
 
 .card-pnl-loss {
-  color: rgba(226, 232, 240, 0.7);
+  color: #ff4d6d;
+  background: rgba(255, 77, 109, 0.16);
 }
 
 .locked-investment-line {

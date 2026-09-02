@@ -57,6 +57,9 @@
             openTrades.length
               ? openTrades
                   .map((trade) => {
+                    const lifecycleStatus = String(trade.lifecycleStatus || "Open").toUpperCase();
+                    const isQueued = lifecycleStatus === "PENDING";
+                    const canJoin = lifecycleStatus === "OPEN";
                     const pnlPercent = typeof getTradePnlPercent === "function" ? getTradePnlPercent(trade) : 0;
                     const currentValue = typeof getTradeCurrentValue === "function" ? getTradeCurrentValue(trade) : 0;
                     const entryPrice = typeof getTradeEntryPrice === "function" ? getTradeEntryPrice(trade) : Number(trade.price || 0);
@@ -71,7 +74,7 @@
                           <div class="signal-list-main">
                             <div class="signal-row-top">
                               <strong>${formatPair(trade.symbol)}</strong>
-                              <span class="signal-strategy-badge ${isJoined ? "support" : "breakout"}">${isJoined ? "Joined" : String(trade.lifecycleStatus || "Open")}</span>
+                              <span class="signal-strategy-badge ${isJoined ? "support" : isQueued ? "queue" : "breakout"}">${isJoined ? "Joined" : isQueued ? "Queue" : String(trade.lifecycleStatus || "Open")}</span>
                             </div>
                             <p class="muted-copy">${typeof renderExchangeBadge === "function" ? renderExchangeBadge(trade.exchange || "bybit") : ""}</p>
                             <p class="muted-copy">Entry ${entryPrice ? formatNumber(entryPrice, 8) : "Market"} | Current ${currentPrice ? formatNumber(currentPrice, 8) : "-"}</p>
@@ -89,7 +92,9 @@
                                 ${
                                   isJoined
                                     ? `<button class="mini-action danger" data-stop-trade-investment="${trade.id}" type="button">Stop</button>`
-                                    : `<button class="mini-action" data-join-trade="${trade.id}" type="button">Join</button>`
+                                    : canJoin
+                                      ? `<button class="mini-action" data-join-trade="${trade.id}" type="button">Join</button>`
+                                      : `<button class="mini-action muted" type="button" disabled>Queued</button>`
                                 }
                               </div>
                             `

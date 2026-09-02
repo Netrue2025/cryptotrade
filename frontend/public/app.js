@@ -3901,6 +3901,7 @@ function renderSummaryCard() {
   const userMirroredPnlPercentage = Number(state.financialDashboard?.performance?.todayPercentage || 0);
   const userBalanceTone = userDynamicPnlUsdt < 0 ? "balance-main-loss" : "balance-main-profit";
   const userCardPnlTone = userDynamicPnlUsdt < 0 ? "card-pnl-loss" : "card-pnl-profit";
+  const userDynamicPnlNgn = configuredRate ? userDynamicPnlUsdt * configuredRate : 0;
 
   if (isAdmin) {
     const adminBalanceNgn = configuredRate ? portfolioBalance * configuredRate : Number(state.totalNgn || 0);
@@ -3953,7 +3954,9 @@ function renderSummaryCard() {
               <h2 class="${userBalanceTone}">${formatSignedNaira(investmentNgn)}</h2>
               <p class="fintech-subline">
                 <span>${investmentUsdt < 0 ? "-" : ""}${formatUsdtUnit(Math.abs(investmentUsdt))}</span>
-                <span class="${userCardPnlTone}">${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
+                <span class="fintech-pnl-chip ${userCardPnlTone}">
+                  ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}% | ${formatSignedNaira(userDynamicPnlNgn, { positiveSign: userDynamicPnlNgn > 0 })}
+                </span>
               </p>
             </button>
             <div class="locked-investment-box">
