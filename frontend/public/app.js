@@ -584,6 +584,14 @@ function formatNaira(value) {
   })}`;
 }
 
+function formatSignedNaira(value, { positiveSign = false } = {}) {
+  const amount = Number(value || 0);
+  if (amount < 0) {
+    return `-${formatNaira(Math.abs(amount))}`;
+  }
+  return `${positiveSign && amount > 0 ? "+" : ""}${formatNaira(amount)}`;
+}
+
 function formatUsdtUnit(value) {
   return `${Number(value || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -3868,7 +3876,6 @@ function renderSummaryCard() {
   const portfolioBalance = isFuturesMode()
     ? Number(futuresAccount.totalMarginBalance || futuresAccount.totalWalletBalance || 0)
     : Number(state.totalUsdt || 0);
-  const investmentDailyReturn = getInvestmentDailyReturnNgn();
   const usdtWallet = getFinancialWallet("USDT");
   const ngnWallet = getFinancialWallet("NGN");
   const ledgerUsdt = Number(usdtWallet?.availableBalance || 0);
@@ -3878,8 +3885,10 @@ function renderSummaryCard() {
   const baseInvestmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
   const userDynamicPnlUsdt = getUserDynamicPnlUsdt();
   const lockedInvestmentUsdt = getUserLockedInvestmentUsdt();
-  const investmentNgn = isAdmin ? baseInvestmentNgn : baseInvestmentNgn + (configuredRate ? userDynamicPnlUsdt * configuredRate : 0);
-  const investmentUsdt = isAdmin ? baseInvestmentUsdt : baseInvestmentUsdt + userDynamicPnlUsdt;
+  const liveInvestmentNgn = Number(state.financialDashboard?.totalBalance?.liveNgnEquivalent ?? baseInvestmentNgn + (configuredRate ? userDynamicPnlUsdt * configuredRate : 0));
+  const liveInvestmentUsdt = Number(state.financialDashboard?.totalBalance?.liveUsdt ?? baseInvestmentUsdt + userDynamicPnlUsdt);
+  const investmentNgn = isAdmin ? baseInvestmentNgn : liveInvestmentNgn;
+  const investmentUsdt = isAdmin ? baseInvestmentUsdt : liveInvestmentUsdt;
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const todayValue = isFuturesMode()
@@ -3941,9 +3950,9 @@ function renderSummaryCard() {
               aria-label="${state.hideBalanceAmounts ? "Show balance" : "Hide balance"}"
               aria-pressed="${state.hideBalanceAmounts ? "true" : "false"}"
             >
-              <h2 class="${userBalanceTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))}</h2>
+              <h2 class="${userBalanceTone}">${formatSignedNaira(investmentNgn)}</h2>
               <p class="fintech-subline">
-                <span>${userDynamicPnlUsdt >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(userDynamicPnlUsdt))}</span>
+                <span>${investmentUsdt < 0 ? "-" : ""}${formatUsdtUnit(Math.abs(investmentUsdt))}</span>
                 <span class="${userCardPnlTone}">${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
               </p>
             </button>
