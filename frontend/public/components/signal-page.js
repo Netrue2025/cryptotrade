@@ -29,8 +29,21 @@
     });
   }
 
-  function renderSignalPage({ signalFeed, formatNumber, formatUsdtUnit }) {
+  function renderSignalPage({
+    signalFeed,
+    trades = [],
+    user = null,
+    formatNumber,
+    formatUsdtUnit,
+    getTradePnlPercent,
+    getTradeCurrentValue,
+    getTradeEntryPrice,
+    getTradeCurrentMarket,
+    renderExchangeBadge,
+  }) {
     const signals = signalFeed?.signals || [];
+    const openTrades = (trades || []).filter((trade) => ["OPEN", "PENDING"].includes(String(trade.lifecycleStatus || "").toUpperCase()));
+    const joinedTrades = openTrades.filter((trade) => trade.userInvestment?.status === "ACTIVE");
     const streamLabel = signalFeed?.streamConnected ? "Live" : "Reconnecting";
     const statusTone = signalFeed?.streamConnected ? "live" : "lagging";
     const selectedIds = signalFeed?.selectedIds || [];
@@ -41,11 +54,11 @@
 
     return `
       <section class="signal-page-shell">
-        <section class="signal-page-hero">
+        <section class="signal-page-hero investment-signal-hero">
           <div>
-            <p class="eyebrow">Realtime Buy Alerts</p>
-            <h3>Signal Dashboard</h3>
-            <p class="muted-copy">Only the top 20 USDT pairs are tracked. Signals stay on the board until they expire after 24 hours or you delete them manually.</p>
+            <p class="eyebrow">Trade Investments</p>
+            <h3>Join open trades</h3>
+            <p class="muted-copy">${user?.role === "user" ? "Deposits stay idle until you join a trade." : "Open admin trades available for users to join."}</p>
           </div>
           <div class="signal-hero-stack">
             <div class="signal-stream-pill ${statusTone}" id="signal-stream-pill">
@@ -77,23 +90,87 @@
 
         <section class="signal-page-toolbar">
           <div class="signal-toolbar-pill">
-            <span>Tracked pairs</span>
-            <strong id="signal-tracked-pairs-count">${signalFeed?.pairs?.length || 20}</strong>
+            <span>Open trades</span>
+            <strong>${openTrades.length}</strong>
           </div>
           <div class="signal-toolbar-pill">
-            <span>Notifications</span>
-            <strong id="signal-notification-permission">${signalFeed?.notificationPermission || "default"}</strong>
+            <span>Joined</span>
+            <strong>${joinedTrades.length}</strong>
           </div>
           <div class="signal-toolbar-pill">
-            <span>Recent signals</span>
+            <span>Signals</span>
             <strong id="signal-recent-count">${signals.length}</strong>
+          </div>
+        </section>
+
+        <section class="signal-board-card investment-board">
+          <div class="signal-board-head">
+            <div>
+              <h4>Open Trades</h4>
+              <p class="muted-copy">Select a trade to start P&L from the current market point.</p>
+            </div>
+          </div>
+          <div class="signal-list open-trade-investment-list">
+            ${
+              openTrades.length
+                ? openTrades
+                    .map((trade) => {
+                      const pnlPercent = typeof getTradePnlPercent === "function" ? getTradePnlPercent(trade) : 0;
+                      const currentValue = typeof getTradeCurrentValue === "function" ? getTradeCurrentValue(trade) : 0;
+                      const entryPrice = typeof getTradeEntryPrice === "function" ? getTradeEntryPrice(trade) : Number(trade.price || 0);
+                      const currentPrice = typeof getTradeCurrentMarket === "function" ? Number(getTradeCurrentMarket(trade.symbol)?.price || 0) : 0;
+                      const investment = trade.userInvestment || null;
+                      const isJoined = investment?.status === "ACTIVE";
+                      const joinedDelta = isJoined ? pnlPercent - Number(investment.baselinePnlPercent || 0) : 0;
+                      const joinedPnl = isJoined ? Number(investment.amountUsdt || 0) * (joinedDelta / 100) : 0;
+                      return `
+                        <div class="signal-list-row signal-open-trade-row">
+                          <div class="signal-row-open signal-open-trade-main">
+                            <div class="signal-list-main">
+                              <div class="signal-row-top">
+                                <strong>${formatPair(trade.symbol)}</strong>
+                                <span class="signal-strategy-badge ${isJoined ? "support" : "breakout"}">${isJoined ? "Joined" : String(trade.lifecycleStatus || "Open")}</span>
+                              </div>
+                              <p class="muted-copy">${typeof renderExchangeBadge === "function" ? renderExchangeBadge(trade.exchange || "bybit") : ""}</p>
+                              <p class="muted-copy">Entry ${entryPrice ? formatNumber(entryPrice, 8) : "Market"} | Current ${currentPrice ? formatNumber(currentPrice, 8) : "-"}</p>
+                            </div>
+                            <div class="signal-list-side">
+                              <strong class="${pnlPercent >= 0 ? "positive" : "negative"}">${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
+                              <p class="muted-copy">${isJoined ? `${formatUsdtUnit(investment.amountUsdt)} joined` : formatUsdtUnit(currentValue)}</p>
+                              ${isJoined ? `<p class="${joinedPnl >= 0 ? "positive" : "negative"}">${joinedPnl >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(joinedPnl))}</p>` : ""}
+                            </div>
+                          </div>
+                          ${
+                            user?.role === "user"
+                              ? `
+                                <div class="signal-invest-actions">
+                                  ${
+                                    isJoined
+                                      ? `<button class="mini-action danger" data-stop-trade-investment="${trade.id}" type="button">Stop</button>`
+                                      : `<button class="mini-action" data-join-trade="${trade.id}" type="button">Join</button>`
+                                  }
+                                </div>
+                              `
+                              : ""
+                          }
+                        </div>
+                      `;
+                    })
+                    .join("")
+                : `
+                  <div class="signal-empty-state">
+                    <strong>No open trades</strong>
+                    <p class="muted-copy">Open admin trades will appear here.</p>
+                  </div>
+                `
+            }
           </div>
         </section>
 
         <section class="signal-board-card">
           <div class="signal-board-head">
             <div>
-              <h4>Latest BUY Signals</h4>
+              <h4>Latest Signals</h4>
               <p class="muted-copy" id="signal-status-message">${signalFeed?.statusMessage || "Waiting for the next qualified setup."}</p>
             </div>
             <div class="signal-board-actions">

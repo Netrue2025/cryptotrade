@@ -373,10 +373,18 @@ function refreshSignalPaneDom() {
 
   host.innerHTML = window.SignalPage.renderSignalPage({
     signalFeed: state.signalFeed,
+    trades: state.trades,
+    user: state.user,
     formatNumber,
     formatUsdtUnit,
+    getTradePnlPercent,
+    getTradeCurrentValue,
+    getTradeEntryPrice,
+    getTradeCurrentMarket,
+    renderExchangeBadge,
   });
   bindSignalFeedActions();
+  bindInvestmentTradeActions();
 }
 
 function refreshSettingsPaneDom() {
@@ -1322,7 +1330,7 @@ function isTradeStrictlyOpen(trade) {
 function isTradeVisibleOnHome(trade) {
   const status = String(trade.lifecycleStatus || "").toUpperCase();
   if (state.user?.role === "user") {
-    return ["OPEN", "PENDING"].includes(status);
+    return ["OPEN", "PENDING"].includes(status) && trade.userInvestment?.status === "ACTIVE";
   }
   return isTradeStrictlyOpen(trade);
 }
@@ -1381,7 +1389,7 @@ function getUserOpenTradePnlUsdt() {
 
   return (state.trades || [])
     .filter((trade) => String(trade.lifecycleStatus || "").toUpperCase() === "OPEN")
-    .filter((trade) => Number(trade.mirroredExecution?.order?.executedQty || 0) > 0)
+    .filter((trade) => trade.userInvestment?.status === "ACTIVE")
     .reduce((sum, trade) => sum + getTradePnlValue(trade), 0);
 }
 
@@ -1735,10 +1743,18 @@ function getTradeRemainingQuantity(trade) {
 }
 
 function getTradeCurrentValue(trade) {
+  if (state.user?.role === "user" && trade.userInvestment?.status === "ACTIVE") {
+    return Number(trade.userInvestment.amountUsdt || 0) + getTradePnlValue(trade);
+  }
   return getTradeRemainingQuantity(trade) * Number(getTradeCurrentMarket(trade.symbol)?.price || 0);
 }
 
 function getTradePnlValue(trade) {
+  if (state.user?.role === "user" && trade.userInvestment?.status === "ACTIVE") {
+    const amountUsdt = Number(trade.userInvestment.amountUsdt || 0);
+    const baselinePnlPercent = Number(trade.userInvestment.baselinePnlPercent || 0);
+    return amountUsdt * ((getTradePnlPercent(trade) - baselinePnlPercent) / 100);
+  }
   const entry = getTradeEntryPrice(trade);
   const current = Number(getTradeCurrentMarket(trade.symbol)?.price || 0);
   const quantity = getTradeRemainingQuantity(trade);
@@ -1972,6 +1988,48 @@ function renderActionModal() {
           formatNumber,
         })
       : "";
+  }
+
+  if (state.actionModal.type === "join-trade") {
+    const trade = state.trades.find((item) => item.id === state.actionModal.tradeId);
+    if (!trade) {
+      return "";
+    }
+    const balance = state.financialDashboard?.totalBalance || {};
+    const activeAmount = (state.trades || [])
+      .filter((item) => item.userInvestment?.status === "ACTIVE")
+      .reduce((sum, item) => sum + Number(item.userInvestment?.amountUsdt || 0), 0);
+    const availableUsdt = Math.max(Number(balance.usdt || 0) - activeAmount, 0);
+    const pnlPercent = getTradePnlPercent(trade);
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card action-modal-card">
+          <button class="modal-close" id="action-modal-close-btn" type="button">x</button>
+          <p class="modal-eyebrow neutral">Join trade</p>
+          <h3>${escapeHtml(trade.symbol || "Trade")}</h3>
+          <div class="action-metric-stack">
+            <div class="action-metric">
+              <span>Available</span>
+              <strong>${formatUsdtUnit(availableUsdt)}</strong>
+            </div>
+            <div class="action-metric">
+              <span>Baseline</span>
+              <strong class="${pnlPercent >= 0 ? "positive" : "negative"}">${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
+            </div>
+          </div>
+          <form id="join-trade-form" class="stack-form wallet-action-fields" data-join-trade-form="${trade.id}">
+            <label class="stack-label">
+              <span>Amount (USDT)</span>
+              <input name="amountUsdt" type="number" min="0" step="0.00000001" max="${availableUsdt}" value="${availableUsdt ? formatNumber(availableUsdt, 8) : ""}" placeholder="0.00" required />
+            </label>
+            <div class="modal-actions">
+              <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
+              <button class="button-primary shimmer-button" type="submit">Join</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
   }
 
   if (state.actionModal.type === "admin-balance") {
@@ -2879,7 +2937,7 @@ async function refreshTradeMarketData() {
         },
       ])
     );
-    refreshTradeDom();
+    render();
   } catch {
     // keep the current snapshot if the lightweight live refresh fails
   }
@@ -3516,6 +3574,35 @@ async function submitUserBankAccount(form) {
     };
     render();
     showNotice("Bank saved");
+  }).catch((error) => showError(error.message));
+}
+
+async function submitJoinTrade(form) {
+  const tradeId = form.dataset.joinTradeForm;
+  const data = Object.fromEntries(new FormData(form).entries());
+  await withLoading(async () => {
+    await api(`/api/trades/${encodeURIComponent(tradeId)}/join`, {
+      method: "POST",
+      body: JSON.stringify({ amountUsdt: data.amountUsdt }),
+    });
+    state.actionModal = null;
+    await loadDashboardData();
+    showNotice("Trade joined");
+  }).catch((error) => showError(error.message));
+}
+
+async function stopJoinedTrade(tradeId) {
+  if (!window.confirm("Stop this trade investment?")) {
+    return;
+  }
+
+  await withLoading(async () => {
+    await api(`/api/trades/${encodeURIComponent(tradeId)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadDashboardData();
+    showNotice("Trade stopped");
   }).catch((error) => showError(error.message));
 }
 
@@ -4409,7 +4496,7 @@ function renderExternalHoldingDisclosure(holding) {
 
 function renderOpenOrdersSection() {
     const openTrades = state.trades.filter(isTradeVisibleOnHome).slice(0, 5);
-    const detectedHoldings = getDetectedSpotHoldings().slice(0, 5);
+    const detectedHoldings = state.user?.role === "user" ? [] : getDetectedSpotHoldings().slice(0, 5);
     const openOrders = (state.openOrders || []).slice(0, 5);
     const canManageTrades = state.user?.role === "admin";
     return `
@@ -4419,7 +4506,7 @@ function renderOpenOrdersSection() {
         <div class="section-head">
           <div>
             <h3>Open Trades</h3>
-            <p class="muted-copy">Live spot positions you are managing.</p>
+            <p class="muted-copy">${state.user?.role === "user" ? "Joined trade investments." : "Live spot positions you are managing."}</p>
           </div>
         </div>
         <div class="compact-list">
@@ -4431,6 +4518,7 @@ function renderOpenOrdersSection() {
                   const currentPrice = Number(getTradeCurrentMarket(trade.symbol).price || 0);
                   const targetPrice = trade.takeProfitTargetPrice || "";
                   const targetPnl = getTradeTpPnlPercent(trade, targetPrice);
+                  const isJoinedInvestment = state.user?.role === "user" && trade.userInvestment?.status === "ACTIVE";
                   const isExpanded = state.expandedTradeIds.includes(trade.id);
                   return `
                     <details class="trade-disclosure trade-row-rich" data-trade-id="${trade.id}" data-trade-symbol-row="${trade.symbol}" data-trade-entry="${getTradeEntryPrice(trade)}" data-trade-side="${trade.side}" data-trade-quantity="${getTradeRemainingQuantity(trade)}" ${isExpanded ? "open" : ""}>
@@ -4456,8 +4544,8 @@ function renderOpenOrdersSection() {
                             <strong>${trade.type}</strong>
                           </div>
                           <div class="trade-detail-pill">
-                            <span>Quantity</span>
-                            <strong>${formatNumber(getTradeRemainingQuantity(trade), 8)}</strong>
+                            <span>${isJoinedInvestment ? "Amount" : "Quantity"}</span>
+                            <strong>${isJoinedInvestment ? formatUsdtUnit(trade.userInvestment.amountUsdt || 0) : formatNumber(getTradeRemainingQuantity(trade), 8)}</strong>
                           </div>
                         </div>
                         <div class="trade-detail-lines">
@@ -4471,11 +4559,12 @@ function renderOpenOrdersSection() {
                           }
                         </div>
                         ${
-                          canManageTrades
+                          canManageTrades || isJoinedInvestment
                             ? `
                               <div class="trade-actions-inline trade-actions-stack reveal-actions">
-                                <button class="micro-btn" data-sell-trade="${trade.id}" type="button">Sell</button>
-                                <button class="micro-btn primary" data-tp-trade="${trade.id}" type="button">TP</button>
+                                ${canManageTrades ? `<button class="micro-btn" data-sell-trade="${trade.id}" type="button">Sell</button>` : ""}
+                                ${canManageTrades ? `<button class="micro-btn primary" data-tp-trade="${trade.id}" type="button">TP</button>` : ""}
+                                ${isJoinedInvestment ? `<button class="micro-btn danger" data-stop-trade-investment="${trade.id}" type="button">Stop</button>` : ""}
                               </div>
                             `
                             : ""
@@ -5074,8 +5163,15 @@ function renderSignalsPane() {
       <div id="signal-page-shell-host">
         ${window.SignalPage.renderSignalPage({
           signalFeed: state.signalFeed,
+          trades: state.trades,
+          user: state.user,
           formatNumber,
           formatUsdtUnit,
+          getTradePnlPercent,
+          getTradeCurrentValue,
+          getTradeEntryPrice,
+          getTradeCurrentMarket,
+          renderExchangeBadge,
         })}
       </div>
     `
@@ -5400,6 +5496,29 @@ function renderDashboardShell() {
   });
 }
 
+function bindInvestmentTradeActions() {
+  const joinTradeForm = document.getElementById("join-trade-form");
+  if (joinTradeForm) {
+    joinTradeForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitJoinTrade(joinTradeForm);
+    });
+  }
+
+  document.querySelectorAll("[data-join-trade]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await withLoading(async () => {
+        await loadFinancialDashboard();
+        showActionModal({ type: "join-trade", tradeId: button.dataset.joinTrade });
+      }).catch((error) => showError(error.message));
+    });
+  });
+
+  document.querySelectorAll("[data-stop-trade-investment]").forEach((button) => {
+    button.addEventListener("click", () => stopJoinedTrade(button.dataset.stopTradeInvestment));
+  });
+}
+
 function bindDashboardActions() {
   bindPasswordVisibilityToggles();
   bindMarketModeActions();
@@ -5407,6 +5526,7 @@ function bindDashboardActions() {
   bindFuturesActions();
   bindAdminUserDisclosureToggles();
   bindSignalFeedActions();
+  bindInvestmentTradeActions();
 
   const notificationButton = document.getElementById("notification-toggle-btn");
   if (notificationButton) {

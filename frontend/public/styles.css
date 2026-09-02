@@ -170,6 +170,10 @@ button {
   align-items: flex-start;
 }
 
+.investment-signal-hero {
+  border-radius: 8px;
+}
+
 .signal-hero-stack {
   display: grid;
   gap: 10px;
@@ -304,6 +308,23 @@ button {
   color: inherit;
   text-align: left;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.signal-open-trade-row {
+  grid-template-columns: 1fr auto;
+}
+
+.signal-open-trade-main {
+  cursor: default;
+}
+
+.signal-invest-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.investment-board .signal-list {
+  max-height: none;
 }
 
 .signal-list-row:hover {
