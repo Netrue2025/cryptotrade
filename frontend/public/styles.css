@@ -2147,6 +2147,20 @@ body[data-theme="dark"] .mirror-guide-pill {
   min-height: 40px;
 }
 
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.inline-check input {
+  width: auto;
+  min-height: 0;
+}
+
 .wallet-instructions {
   display: grid;
   gap: 4px;

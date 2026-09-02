@@ -1382,9 +1382,26 @@ function getUserOpenTradePnlUsdt() {
     .reduce((sum, trade) => sum + getTradePnlValue(trade), 0);
 }
 
+function getSavedBankAccount() {
+  return state.financialDashboard?.bankAccount || {};
+}
+
+function getUserDynamicPnlUsdt() {
+  if (state.user?.role !== "user") {
+    return 0;
+  }
+
+  const openTradePnl = getUserOpenTradePnlUsdt();
+  if (openTradePnl) {
+    return openTradePnl;
+  }
+
+  return Number(state.financialDashboard?.performance?.todayUsdt || state.financialDashboard?.mirrorPnl?.amountUsdt || 0);
+}
+
 function getInvestmentDailyReturnNgn() {
   if (state.user?.role === "user") {
-    return getUserOpenTradePnlUsdt() * getUsdtToNgnRate();
+    return getUserDynamicPnlUsdt() * getUsdtToNgnRate();
   }
 
   const performanceValue = Number(state.financialDashboard?.performance?.todayUsdt || 0);
@@ -1962,6 +1979,7 @@ function renderActionModal() {
     const rate = Number(settings.exchangeRate?.usdtToNgn || state.financialDashboard?.totalBalance?.usdtToNgnRate || 0);
     const usdtWallet = getFinancialWallet("USDT");
     const ngnWallet = getFinancialWallet("NGN");
+    const savedBank = getSavedBankAccount();
     const currency = ["NGN", "USDT"].includes(state.actionModal.currency) ? state.actionModal.currency : "";
     const currencyLabel = currency === "NGN" ? "Naira" : currency;
     const title = isDeposit ? "Deposit" : "Withdraw";
@@ -2040,15 +2058,19 @@ function renderActionModal() {
         <p class="wallet-equivalent-preview" id="wallet-equivalent-preview">Equivalent: --</p>
         <label class="stack-label">
           <span>Bank</span>
-          <input id="wallet-bank-input" type="text" placeholder="Bank name" />
+          <input id="wallet-bank-input" type="text" placeholder="Bank name" value="${escapeHtml(savedBank.bankName || "")}" />
         </label>
         <label class="stack-label">
           <span>Account name</span>
-          <input id="wallet-account-name-input" type="text" placeholder="Account name" value="${escapeHtml(state.user?.name || "")}" />
+          <input id="wallet-account-name-input" type="text" placeholder="Account name" value="${escapeHtml(savedBank.accountName || state.user?.name || "")}" />
         </label>
         <label class="stack-label">
           <span>Account number</span>
-          <input id="wallet-account-input" type="text" inputmode="numeric" maxlength="10" placeholder="10 digits" />
+          <input id="wallet-account-input" type="text" inputmode="numeric" maxlength="10" placeholder="10 digits" value="${escapeHtml(savedBank.accountNumber || "")}" />
+        </label>
+        <label class="inline-check wallet-save-bank-row">
+          <input id="wallet-save-bank-input" type="checkbox" checked />
+          <span>Save bank</span>
         </label>
       `
       : currency === "USDT"
@@ -3420,6 +3442,26 @@ async function submitAdminDepositSettings(form) {
   }).catch((error) => showError(error.message));
 }
 
+async function submitUserBankAccount(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  await withLoading(async () => {
+    const payload = await api("/api/user/bank-account", {
+      method: "PUT",
+      body: JSON.stringify({
+        bankName: data.bankName || "",
+        accountName: data.accountName || "",
+        accountNumber: String(data.accountNumber || "").replace(/\D/g, ""),
+      }),
+    });
+    state.financialDashboard = {
+      ...(state.financialDashboard || {}),
+      bankAccount: payload.bankAccount,
+    };
+    render();
+    showNotice("Bank saved");
+  }).catch((error) => showError(error.message));
+}
+
 async function submitAdminUserBonus(form, userId) {
   const data = Object.fromEntries(new FormData(form).entries());
   await withLoading(async () => {
@@ -3634,9 +3676,9 @@ function renderSummaryCard() {
   const configuredRate = getUsdtToNgnRate();
   const baseInvestmentNgn = Number(state.financialDashboard?.totalBalance?.ngnEquivalent || ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0));
   const baseInvestmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
-  const userOpenTradePnlUsdt = getUserOpenTradePnlUsdt();
-  const investmentNgn = isAdmin ? baseInvestmentNgn : baseInvestmentNgn + (configuredRate ? userOpenTradePnlUsdt * configuredRate : 0);
-  const investmentUsdt = isAdmin ? baseInvestmentUsdt : baseInvestmentUsdt + userOpenTradePnlUsdt;
+  const userDynamicPnlUsdt = getUserDynamicPnlUsdt();
+  const investmentNgn = isAdmin ? baseInvestmentNgn : baseInvestmentNgn + (configuredRate ? userDynamicPnlUsdt * configuredRate : 0);
+  const investmentUsdt = isAdmin ? baseInvestmentUsdt : baseInvestmentUsdt + userDynamicPnlUsdt;
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const todayValue = isFuturesMode()
@@ -4793,6 +4835,7 @@ function renderSettingsPane() {
   const depositSettings = financeSettings.deposit || {};
   const exchangeRateSettings = financeSettings.exchangeRate || {};
   const adminDepositSettingsDraft = state.adminDepositSettingsDraft || {};
+  const savedBank = getSavedBankAccount();
   const depositSettingValue = (key, fallback = "") =>
     adminDepositSettingsDraft[key] !== undefined ? adminDepositSettingsDraft[key] : fallback;
   return `
@@ -4866,6 +4909,26 @@ function renderSettingsPane() {
             : ""
         }
       </section>
+      ${
+        state.user.role === "user"
+          ? `
+            <section class="mobile-card">
+              <div class="section-head">
+                <div>
+                  <h3>Withdrawal Bank</h3>
+                  <p class="muted-copy">Saved for fast Naira withdrawals.</p>
+                </div>
+              </div>
+              <form id="user-bank-account-form" class="stack-form subtle-form">
+                <label>Bank <input name="bankName" value="${escapeHtml(savedBank.bankName || "")}" placeholder="Bank name" /></label>
+                <label>Account name <input name="accountName" value="${escapeHtml(savedBank.accountName || state.user?.name || "")}" placeholder="Account name" /></label>
+                <label>Account number <input name="accountNumber" value="${escapeHtml(savedBank.accountNumber || "")}" placeholder="10 digits" inputmode="numeric" maxlength="10" /></label>
+                <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save</button>
+              </form>
+            </section>
+          `
+          : ""
+      }
       ${
         state.user.role === "admin"
           ? `
@@ -5358,6 +5421,14 @@ function bindDashboardActions() {
     });
   }
 
+  const userBankAccountForm = document.getElementById("user-bank-account-form");
+  if (userBankAccountForm) {
+    userBankAccountForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitUserBankAccount(userBankAccountForm);
+    });
+  }
+
   const signalAutoTradeForm = document.getElementById("signal-auto-trade-form");
   if (signalAutoTradeForm) {
     signalAutoTradeForm.addEventListener("submit", async (event) => {
@@ -5536,6 +5607,7 @@ function bindDashboardActions() {
             currency,
             amount,
             destination,
+            saveBankAccount: currency === "NGN" ? document.getElementById("wallet-save-bank-input")?.checked !== false : false,
           }),
         });
         await loadFinancialDashboard();
