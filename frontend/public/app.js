@@ -17,6 +17,7 @@ const TRADE_REFRESH_INTERVAL_MS = 30000;
 const FUTURES_REFRESH_INTERVAL_MS = 180000;
 const SIGNAL_CHART_REFRESH_INTERVAL_MS = 5000;
 const SIGNAL_AUDIO_ENABLED_STORAGE_KEY = "tradeflow-signal-audio-enabled";
+const BALANCE_PRIVACY_STORAGE_KEY = "tradeflow-balance-hidden";
 const ACTIVE_API_ORDER_STATUSES = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
 const STABLECOIN_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD"];
 const KNOWN_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "EUR", "BRL", "TRY"];
@@ -88,6 +89,7 @@ const state = {
   openOrders: [],
   trades: [],
   dashboardMarketMode: "spot",
+  hideBalanceAmounts: localStorage.getItem(BALANCE_PRIVACY_STORAGE_KEY) === "true",
   futuresAccount: null,
   futuresLastLoadedAt: 0,
   futuresError: "",
@@ -3932,14 +3934,19 @@ function renderSummaryCard() {
             <span>Investment</span>
           </div>
           <div class="fintech-investment-grid">
-            <div class="fintech-pnl-stack">
+            <button
+              class="fintech-pnl-stack balance-privacy-toggle ${state.hideBalanceAmounts ? "is-hidden" : ""}"
+              data-balance-privacy-toggle
+              type="button"
+              aria-label="${state.hideBalanceAmounts ? "Show balance" : "Hide balance"}"
+              aria-pressed="${state.hideBalanceAmounts ? "true" : "false"}"
+            >
               <h2 class="${userBalanceTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))}</h2>
-              <p class="fintech-subline">${userDynamicPnlUsdt >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(userDynamicPnlUsdt))}</p>
-              <p class="muted-bright">
-                Live P&L <span class="${userCardPnlTone}">${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
+              <p class="fintech-subline">
+                <span>${userDynamicPnlUsdt >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(userDynamicPnlUsdt))}</span>
+                <span class="${userCardPnlTone}">${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
               </p>
-              <p class="fintech-total-line">Balance ${formatNaira(investmentNgn)} / ${formatUsdtUnit(investmentUsdt)}</p>
-            </div>
+            </button>
             <div class="locked-investment-box">
               <span class="lock-badge">${icon("lock")}</span>
               <small>Locked</small>
@@ -5590,6 +5597,14 @@ function bindDashboardActions() {
       render();
     });
   }
+
+  document.querySelectorAll("[data-balance-privacy-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.hideBalanceAmounts = !state.hideBalanceAmounts;
+      localStorage.setItem(BALANCE_PRIVACY_STORAGE_KEY, state.hideBalanceAmounts ? "true" : "false");
+      render();
+    });
+  });
 
   document.querySelectorAll("[data-notification-open]").forEach((button) => {
     button.addEventListener("click", () => {
