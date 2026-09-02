@@ -1457,10 +1457,14 @@ function getAvailableTradeJoinBalanceUsdt() {
   const usdtWallet = getFinancialWallet("USDT");
   const ngnWallet = getFinancialWallet("NGN");
   const rate = getUsdtToNgnRate();
+  const activeInvestments = getActiveInvestmentRecords();
   const dashboardAvailable = Number(balance.usdt || 0);
   const walletAvailable = Number(usdtWallet?.availableBalance || 0) + (rate ? Number(ngnWallet?.availableBalance || 0) / rate : 0);
-  const availableUsdt = Math.max(dashboardAvailable || walletAvailable || 0, 0);
-  const legacyActiveAmount = getActiveInvestmentRecords()
+  const fallbackDashboardAvailable = activeInvestments.length
+    ? 0
+    : [balance.baseUsdt, balance.liveUsdt].map((value) => Number(value || 0)).find((value) => value > 0) || 0;
+  const availableUsdt = Math.max(dashboardAvailable || walletAvailable || fallbackDashboardAvailable || 0, 0);
+  const legacyActiveAmount = activeInvestments
     .filter((investment) => !Array.isArray(investment.fundingSources) || !investment.fundingSources.length)
     .reduce((sum, investment) => sum + Number(investment.amountUsdt || 0), 0);
   return Math.max(availableUsdt - legacyActiveAmount, 0);
@@ -2141,7 +2145,7 @@ function renderActionModal() {
             </label>
             <label class="stack-label">
               <span>Amount</span>
-              <input name="amount" type="number" min="0" step="0.00000001" placeholder="Set balance" required />
+              <input name="amount" type="number" min="0" step="0.00000001" value="${formatDecimalInput(liveUsdt)}" placeholder="Set balance" required />
             </label>
             <label class="stack-label">
               <span>Note</span>
