@@ -440,6 +440,7 @@ function toggleSelectAllSignals() {
 async function api(path, options = {}) {
   const response = await fetch(toApiUrl(path), {
     credentials: "include",
+    cache: "no-store",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1086,6 +1087,8 @@ function icon(name) {
       '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18"/><path d="M7 15h4"/>',
     gift:
       '<path d="M20 12v8H4v-8"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H8.5a2 2 0 1 1 2-2c0 2-2.5 2-2.5 2"/><path d="M12 8h3.5a2 2 0 1 0-2-2c0 2 2.5 2 2.5 2"/>',
+    edit:
+      '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z"/>',
     settings:
       '<path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Zm8 3.3-.9-.5a7.5 7.5 0 0 0-.4-1l.5-1a1 1 0 0 0-.2-1.1l-1.2-1.2a1 1 0 0 0-1.1-.2l-1 .5c-.3-.2-.7-.3-1-.4L14 3h-4l-.4 1.1c-.3.1-.7.2-1 .4l-1-.5a1 1 0 0 0-1.1.2L5 5.4a1 1 0 0 0-.2 1.1l.5 1c-.2.3-.3.7-.4 1L4 12v.1l.9.4c.1.3.2.7.4 1l-.5 1a1 1 0 0 0 .2 1.1l1.2 1.2a1 1 0 0 0 1.1.2l1-.5c.3.2.7.3 1 .4L10 21h4l.4-1.1c.3-.1.7-.2 1-.4l1 .5a1 1 0 0 0 1.1-.2l1.2-1.2a1 1 0 0 0 .2-1.1l-.5-1c.2-.3.3-.7.4-1l.9-.4V12Z"/>',
     signals:
@@ -1971,6 +1974,57 @@ function renderActionModal() {
       : "";
   }
 
+  if (state.actionModal.type === "admin-balance") {
+    const user = state.users.find((item) => item.id === state.actionModal.userId);
+    if (!user) {
+      return "";
+    }
+    const financeSummary = user.financeSummary || {};
+    const totalBalance = financeSummary.totalBalance || {};
+    const liveUsdt = Number(totalBalance.liveUsdt || totalBalance.usdt || 0);
+    const liveNgn = Number(totalBalance.liveNgnEquivalent || totalBalance.ngnEquivalent || 0);
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card action-modal-card">
+          <button class="modal-close" id="action-modal-close-btn" type="button">x</button>
+          <p class="modal-eyebrow neutral">Balance</p>
+          <h3>${escapeHtml(user.name || "User")}</h3>
+          <div class="action-metric-stack">
+            <div class="action-metric">
+              <span>Live</span>
+              <strong>${formatUsdtUnit(liveUsdt)}</strong>
+            </div>
+            <div class="action-metric">
+              <span>Naira</span>
+              <strong>${formatNaira(liveNgn)}</strong>
+            </div>
+          </div>
+          <form id="admin-balance-modal-form" class="stack-form wallet-action-fields" data-admin-balance-form="${user.id}">
+            <label class="stack-label">
+              <span>Currency</span>
+              <select name="currency" aria-label="Balance currency">
+                <option value="USDT">USDT</option>
+                <option value="NGN">Naira</option>
+              </select>
+            </label>
+            <label class="stack-label">
+              <span>Amount</span>
+              <input name="amount" type="number" min="0" step="0.00000001" placeholder="Set balance" required />
+            </label>
+            <label class="stack-label">
+              <span>Note</span>
+              <input name="note" type="text" placeholder="Reason" value="Balance updated" />
+            </label>
+            <div class="modal-actions">
+              <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
+              <button class="button-primary shimmer-button" type="submit">${icon("edit")} Update</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   if (state.actionModal.type === "deposit" || state.actionModal.type === "withdraw") {
     const isDeposit = state.actionModal.type === "deposit";
     const settings = getFinancialSettings();
@@ -1980,6 +2034,9 @@ function renderActionModal() {
     const usdtWallet = getFinancialWallet("USDT");
     const ngnWallet = getFinancialWallet("NGN");
     const savedBank = getSavedBankAccount();
+    const liveBalance = state.financialDashboard?.totalBalance || {};
+    const liveAvailableUsdt = Number(liveBalance.liveUsdt || liveBalance.usdt || usdtWallet?.availableBalance || 0);
+    const liveAvailableNgn = Number(liveBalance.liveNgnEquivalent || liveBalance.ngnEquivalent || ngnWallet?.availableBalance || 0);
     const currency = ["NGN", "USDT"].includes(state.actionModal.currency) ? state.actionModal.currency : "";
     const currencyLabel = currency === "NGN" ? "Naira" : currency;
     const title = isDeposit ? "Deposit" : "Withdraw";
@@ -1994,8 +2051,8 @@ function renderActionModal() {
             : "Admin confirms Naira deposits."
           : `Network: ${depositSettings.usdtNetwork || "USDT"}.`
         : currency === "NGN"
-          ? `Available: ${formatNaira(Number(ngnWallet?.availableBalance || 0))}.`
-          : `Available: ${formatUsdtUnit(Number(usdtWallet?.availableBalance || 0))}.`;
+          ? `Available: ${formatNaira(liveAvailableNgn)}.`
+          : `Available: ${formatUsdtUnit(liveAvailableUsdt)}.`;
     const currencyChoices = `
       <div class="wallet-choice-row" role="group" aria-label="${isDeposit ? "Deposit" : "Withdrawal"} currency">
         <button class="wallet-choice ${currency === "NGN" ? "active" : ""}" data-wallet-currency="NGN" type="button">Naira</button>
@@ -3504,7 +3561,9 @@ async function submitAdminUserBalance(form, userId) {
         recentTransactions: payload.profile.recentTransactions || [],
       });
     }
+    state.actionModal = null;
     await Promise.all([loadFinancialDashboard(), loadAdminFinanceQueues()]);
+    await loadDashboardData();
     render();
     showNotice("Balance updated");
   }).catch((error) => showError(error.message));
@@ -4453,6 +4512,11 @@ function renderAdminUserCard(user) {
   const passwordDraft = getAdminPasswordDraft(user.id);
   const usdtWallet = getWalletFromList(user.ledgerWallets, "USDT");
   const ngnWallet = getWalletFromList(user.ledgerWallets, "NGN");
+  const financeSummary = user.financeSummary || {};
+  const totalBalance = financeSummary.totalBalance || {};
+  const liveUsdt = Number(totalBalance.liveUsdt || totalBalance.usdt || usdtWallet.availableBalance || 0);
+  const liveNgn = Number(totalBalance.liveNgnEquivalent || totalBalance.ngnEquivalent || ngnWallet.availableBalance || 0);
+  const livePnl = Number(financeSummary.performance?.todayUsdt || financeSummary.mirrorPnl?.amountUsdt || 0);
   const recentTransactions = user.recentTransactions || [];
   return `
     <details class="trade-disclosure admin-user-card" data-admin-user-id="${user.id}" ${isExpanded ? "open" : ""}>
@@ -4463,24 +4527,27 @@ function renderAdminUserCard(user) {
           <div class="exchange-pill-row">${renderExchangeBadgeList(connectedExchanges)}</div>
         </div>
         <div class="asset-values">
-          <strong>${user.mirrorEnabled ? "Mirror active" : "Mirror disconnected"}</strong>
-          <p class="muted-copy">${user.exchangeConnected ? `${getExchangeLabel(user.activeExchange)} active` : "No active exchange linked"}</p>
+          <strong>${formatUsdtUnit(liveUsdt)}</strong>
+          <p class="muted-copy">${formatNaira(liveNgn)}</p>
         </div>
       </summary>
       <div class="trade-disclosure-body">
         <div class="trade-detail-grid">
           <div class="trade-detail-pill">
-            <span>USDT</span>
-            <strong>${formatUsdtUnit(usdtWallet.availableBalance)}</strong>
+            <span>Live balance</span>
+            <strong>${formatUsdtUnit(liveUsdt)}</strong>
           </div>
           <div class="trade-detail-pill">
-            <span>Naira</span>
-            <strong>${formatNaira(ngnWallet.availableBalance)}</strong>
+            <span>P&L</span>
+            <strong class="${livePnl > 0 ? "positive" : livePnl < 0 ? "negative" : "neutral"}">${livePnl >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(livePnl))}</strong>
           </div>
           <div class="trade-detail-pill">
             <span>Locked</span>
             <strong>${formatUsdtUnit(usdtWallet.lockedBalance)} / ${formatNaira(ngnWallet.lockedBalance)}</strong>
           </div>
+        </div>
+        <div class="trade-actions-inline admin-user-actions">
+          <button class="micro-btn icon-only-btn" data-admin-balance-open="${user.id}" type="button" aria-label="Edit balance" title="Edit balance">${icon("edit")}</button>
         </div>
         <div class="trade-detail-lines">
           <p class="muted-copy">${user.mirrorEnabled ? "Mirror active" : "Mirror off"} | ${getExchangeLabel(user.activeExchange || "bybit")} | ${user.createdAt ? new Date(user.createdAt).toLocaleDateString() : ""}</p>
@@ -4507,15 +4574,6 @@ function renderAdminUserCard(user) {
             <input name="amount" type="number" min="0" step="0.00000001" placeholder="Bonus" required />
             <input name="note" type="text" placeholder="Note" />
             <button class="micro-btn primary" type="submit">${icon("gift")} Add</button>
-          </form>
-          <form class="inline-admin-form" data-admin-balance-form="${user.id}">
-            <select name="currency" aria-label="Balance currency">
-              <option value="USDT">USDT</option>
-              <option value="NGN">Naira</option>
-            </select>
-            <input name="amount" type="number" min="0" step="0.00000001" placeholder="Set balance" required />
-            <input name="note" type="text" placeholder="Reason" />
-            <button class="micro-btn" type="submit">${icon("card")} Set</button>
           </form>
           <form class="inline-admin-form message-form" data-admin-message-form="${user.id}">
             <input name="title" type="text" placeholder="Title" value="Admin message" />
@@ -5082,7 +5140,10 @@ function renderWalletHistoryRow(item) {
     <div class="asset-card wallet-history-row">
       <div>
         <strong>${escapeHtml(item.description || item.type || "Wallet")}</strong>
-        <p class="muted-copy">${escapeHtml(statusLabel)}${item.createdAt ? ` | ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
+        <p class="muted-copy">
+          ${statusLabel ? `<span class="wallet-status-badge ${walletStatusClass(item.status)}">${escapeHtml(statusLabel)}</span>` : ""}
+          ${item.createdAt ? `<span>${new Date(item.createdAt).toLocaleString()}</span>` : ""}
+        </p>
         ${equivalent ? `<p class="muted-copy">Eq ${equivalent}</p>` : ""}
       </div>
       <div class="asset-values">
@@ -5091,6 +5152,20 @@ function renderWalletHistoryRow(item) {
       </div>
     </div>
   `;
+}
+
+function walletStatusClass(status) {
+  const value = String(status || "").toUpperCase();
+  if (["APPROVED", "COMPLETED", "SUCCESSFUL"].includes(value)) {
+    return "wallet-status-success";
+  }
+  if (value === "PROCESSING") {
+    return "wallet-status-processing";
+  }
+  if (value === "REJECTED" || value === "CANCELLED" || value === "CANCELED") {
+    return "wallet-status-rejected";
+  }
+  return "wallet-status-pending";
 }
 
 function formatWalletRequestStatus(status) {
@@ -5465,6 +5540,12 @@ function bindDashboardActions() {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       submitAdminUserBonus(form, form.dataset.adminBonusForm);
+    });
+  });
+
+  document.querySelectorAll("[data-admin-balance-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      showActionModal({ type: "admin-balance", userId: button.dataset.adminBalanceOpen });
     });
   });
 
