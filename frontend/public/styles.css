@@ -2008,7 +2008,7 @@ body[data-theme="dark"] .mirror-guide-pill {
   z-index: 40;
   display: grid;
   place-items: center;
-  padding: 18px;
+  padding: 12px;
   background: rgba(15, 23, 42, 0.38);
   backdrop-filter: blur(8px);
 }
@@ -2016,6 +2016,8 @@ body[data-theme="dark"] .mirror-guide-pill {
 .modal-card,
 .loader-card {
   width: min(360px, 100%);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
   background: var(--modal-bg);
   padding: 20px;
   position: relative;
@@ -2066,7 +2068,25 @@ body[data-theme="dark"] .mirror-guide-pill {
 
 .action-modal-card {
   display: grid;
-  gap: 14px;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  width: min(420px, 100%);
+  overflow: hidden;
+  padding: 16px;
+}
+
+.action-modal-card h3 {
+  margin: 2px 0;
+  font-size: 1.12rem;
+}
+
+.action-modal-card .modal-text {
+  line-height: 1.35;
+  font-size: 0.88rem;
+}
+
+.action-modal-card .modal-actions {
+  margin-top: 0;
 }
 
 .wallet-choice-row {
@@ -2076,9 +2096,9 @@ body[data-theme="dark"] .mirror-guide-pill {
 }
 
 .wallet-choice {
-  min-height: 46px;
+  min-height: 38px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--soft-surface);
   color: var(--muted);
   font-weight: 800;
@@ -2112,18 +2132,30 @@ body[data-theme="dark"] .mirror-guide-pill {
 
 .stack-label {
   display: grid;
-  gap: 8px;
+  gap: 5px;
+}
+
+.wallet-action-fields {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+  gap: 9px;
+}
+
+.wallet-action-fields input {
+  min-height: 40px;
 }
 
 .wallet-instructions {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 4px;
+  padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--soft-surface);
   color: var(--muted);
-  font-size: 0.86rem;
+  font-size: 0.82rem;
 }
 
 .wallet-instructions p {
@@ -2131,7 +2163,7 @@ body[data-theme="dark"] .mirror-guide-pill {
 }
 
 .wallet-equivalent-preview {
-  margin: -2px 0 0;
+  margin: 0;
   color: var(--accent);
   font-size: 0.86rem;
   font-weight: 800;
@@ -2144,7 +2176,7 @@ body[data-theme="dark"] .mirror-guide-pill {
 }
 
 .wallet-instructions code {
-  padding: 8px;
+  padding: 6px 8px;
   border-radius: 10px;
   background: var(--input-bg);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;

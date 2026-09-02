@@ -1316,6 +1316,14 @@ function isTradeStrictlyOpen(trade) {
   return hasActiveOpenOrderForSymbol(trade.symbol) || hasExchangeBalanceForTrade(trade);
 }
 
+function isTradeVisibleOnHome(trade) {
+  const status = String(trade.lifecycleStatus || "").toUpperCase();
+  if (state.user?.role === "user") {
+    return ["OPEN", "PENDING"].includes(status);
+  }
+  return isTradeStrictlyOpen(trade);
+}
+
 function isTradeClearableFromHistory(trade) {
   return !isTradeStrictlyOpen(trade) && trade.lifecycleStatus !== "PENDING";
 }
@@ -1363,7 +1371,22 @@ function getInvestmentBalanceNgn() {
   return Number(state.financialDashboard?.totalBalance?.ngnEquivalent || state.totalNgn || 0);
 }
 
+function getUserOpenTradePnlUsdt() {
+  if (state.user?.role !== "user") {
+    return 0;
+  }
+
+  return (state.trades || [])
+    .filter((trade) => String(trade.lifecycleStatus || "").toUpperCase() === "OPEN")
+    .filter((trade) => Number(trade.mirroredExecution?.order?.executedQty || 0) > 0)
+    .reduce((sum, trade) => sum + getTradePnlValue(trade), 0);
+}
+
 function getInvestmentDailyReturnNgn() {
+  if (state.user?.role === "user") {
+    return getUserOpenTradePnlUsdt() * getUsdtToNgnRate();
+  }
+
   const performanceValue = Number(state.financialDashboard?.performance?.todayUsdt || 0);
   const mirrorValue = Number(state.financialDashboard?.mirrorPnl?.amountUsdt || 0);
   return (performanceValue || mirrorValue) * getUsdtToNgnRate();
@@ -2053,7 +2076,7 @@ function renderActionModal() {
           <h3>${currencyLabel ? `${title} ${currencyLabel}` : title}</h3>
           <p class="modal-text">${note}</p>
           ${currencyChoices}
-          <div class="stack-form">
+          <div class="stack-form wallet-action-fields">
             ${isDeposit ? depositForm : withdrawalForm}
           </div>
           ${
@@ -3609,8 +3632,11 @@ function renderSummaryCard() {
   const ledgerUsdt = Number(usdtWallet?.availableBalance || 0);
   const ledgerNgn = Number(ngnWallet?.availableBalance || 0);
   const configuredRate = getUsdtToNgnRate();
-  const investmentNgn = Number(state.financialDashboard?.totalBalance?.ngnEquivalent || ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0));
-  const investmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
+  const baseInvestmentNgn = Number(state.financialDashboard?.totalBalance?.ngnEquivalent || ledgerNgn + (configuredRate ? ledgerUsdt * configuredRate : 0));
+  const baseInvestmentUsdt = Number(state.financialDashboard?.totalBalance?.usdt || ledgerUsdt + (configuredRate ? ledgerNgn / configuredRate : 0));
+  const userOpenTradePnlUsdt = getUserOpenTradePnlUsdt();
+  const investmentNgn = isAdmin ? baseInvestmentNgn : baseInvestmentNgn + (configuredRate ? userOpenTradePnlUsdt * configuredRate : 0);
+  const investmentUsdt = isAdmin ? baseInvestmentUsdt : baseInvestmentUsdt + userOpenTradePnlUsdt;
   const accountLoading = state.loadingAccount;
   const exchangeLabel = getExchangeLabel(getActiveExchange());
   const todayValue = isFuturesMode()
@@ -3635,7 +3661,7 @@ function renderSummaryCard() {
       ];
 
   if (isAdmin) {
-    const adminBalanceNgn = Number(state.totalNgn || (configuredRate ? portfolioBalance * configuredRate : 0));
+    const adminBalanceNgn = configuredRate ? portfolioBalance * configuredRate : Number(state.totalNgn || 0);
     const adminPnlNgn = configuredRate ? todayValue * configuredRate : 0;
     return `
       <section class="balance-carousel" data-section="wallet">
@@ -4281,7 +4307,7 @@ function renderExternalHoldingDisclosure(holding) {
 }
 
 function renderOpenOrdersSection() {
-    const openTrades = state.trades.filter(isTradeStrictlyOpen).slice(0, 5);
+    const openTrades = state.trades.filter(isTradeVisibleOnHome).slice(0, 5);
     const detectedHoldings = getDetectedSpotHoldings().slice(0, 5);
     const openOrders = (state.openOrders || []).slice(0, 5);
     const canManageTrades = state.user?.role === "admin";
@@ -4988,11 +5014,12 @@ function renderWalletHistoryRow(item) {
   const currency = item.currency || "USDT";
   const equivalent = formatRecordEquivalent(item, currency);
   const tone = amount > 0 ? "positive" : amount < 0 ? "negative" : "neutral";
+  const statusLabel = formatWalletRequestStatus(item.status);
   return `
     <div class="asset-card wallet-history-row">
       <div>
         <strong>${escapeHtml(item.description || item.type || "Wallet")}</strong>
-        <p class="muted-copy">${escapeHtml(item.status || "")}${item.createdAt ? ` | ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
+        <p class="muted-copy">${escapeHtml(statusLabel)}${item.createdAt ? ` | ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
         ${equivalent ? `<p class="muted-copy">Eq ${equivalent}</p>` : ""}
       </div>
       <div class="asset-values">
@@ -5003,8 +5030,38 @@ function renderWalletHistoryRow(item) {
   `;
 }
 
-function renderWalletHistorySection() {
-  const walletHistory = state.financialDashboard?.walletHistory || [];
+function formatWalletRequestStatus(status) {
+  const value = String(status || "").toUpperCase();
+  if (["APPROVED", "COMPLETED", "SUCCESSFUL"].includes(value)) {
+    return "Successful";
+  }
+  if (value === "PROCESSING") {
+    return "Processing";
+  }
+  if (value === "REJECTED") {
+    return "Rejected";
+  }
+  if (value === "CANCELLED" || value === "CANCELED") {
+    return "Cancelled";
+  }
+  return value ? "Pending" : "";
+}
+
+function isWalletRequestHistoryItem(item) {
+  const kind = String(item?.kind || item?.type || "").toUpperCase();
+  return ["DEPOSIT", "WITHDRAWAL"].includes(kind);
+}
+
+function renderWalletHistorySection({
+  limit = 80,
+  title = "Wallet History",
+  description = "Deposits, withdrawals, and ledger updates.",
+  requestsOnly = false,
+  showMore = false,
+} = {}) {
+  const source = (state.financialDashboard?.walletHistory || [])
+    .filter((item) => !requestsOnly || isWalletRequestHistoryItem(item));
+  const walletHistory = source.slice(0, limit);
   if (!walletHistory.length) {
     return "";
   }
@@ -5012,9 +5069,10 @@ function renderWalletHistorySection() {
     <section class="mobile-card">
       <div class="section-head">
         <div>
-          <h3>Wallet History</h3>
-          <p class="muted-copy">Deposits, withdrawals, and ledger updates.</p>
+          <h3>${title}</h3>
+          <p class="muted-copy">${description}</p>
         </div>
+        ${showMore ? `<button class="text-link" data-tab="history" type="button">See more</button>` : ""}
       </div>
       <div class="compact-list">
         ${walletHistory.map(renderWalletHistoryRow).join("")}
@@ -5139,6 +5197,13 @@ function renderHomePane() {
     return `
       ${renderMarketModeSwitch()}
       ${renderSummaryCard()}
+      ${renderWalletHistorySection({
+        limit: 10,
+        title: "Requests",
+        description: "Deposits and withdrawals.",
+        requestsOnly: true,
+        showMore: true,
+      })}
       ${
         isFuturesMode()
           ? renderFuturesDashboard()
