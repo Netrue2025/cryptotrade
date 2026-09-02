@@ -29,6 +29,11 @@
     });
   }
 
+  function toneClass(value) {
+    const amount = Number(value || 0);
+    return amount > 0 ? "positive" : amount < 0 ? "negative" : "neutral";
+  }
+
   function renderOpenTradeInvestmentBoard({
     trades = [],
     user = null,
@@ -80,9 +85,9 @@
                             <p class="muted-copy">Entry ${entryPrice ? formatNumber(entryPrice, 8) : "Market"} | Current ${currentPrice ? formatNumber(currentPrice, 8) : "-"}</p>
                           </div>
                           <div class="signal-list-side">
-                            <strong class="${pnlPercent >= 0 ? "positive" : "negative"}">${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
+                            <strong class="${toneClass(pnlPercent)}">${pnlPercent > 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
                             <p class="muted-copy">${isJoined ? `${formatUsdtUnit(investment.amountUsdt)} joined` : formatUsdtUnit(currentValue)}</p>
-                            ${isJoined ? `<p class="${joinedPnl >= 0 ? "positive" : "negative"}">${joinedPnl >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(joinedPnl))}</p>` : ""}
+                            ${isJoined ? `<p class="${toneClass(joinedPnl)}">${joinedPnl > 0 ? "+" : joinedPnl < 0 ? "-" : ""}${formatUsdtUnit(Math.abs(joinedPnl))}</p>` : ""}
                           </div>
                         </div>
                         ${

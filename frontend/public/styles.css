@@ -1461,6 +1461,11 @@ body[data-theme="dark"] .section-loading-card {
   background: rgba(255, 77, 109, 0.16);
 }
 
+.card-pnl-neutral {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.18);
+}
+
 .locked-investment-line {
   margin: 0;
   color: rgba(255, 255, 255, 0.72);

@@ -1452,24 +1452,6 @@ function getUserLockedInvestmentUsdt() {
   return getActiveInvestmentRecords().reduce((sum, investment) => sum + Number(investment.amountUsdt || 0), 0);
 }
 
-function getAvailableTradeJoinBalanceUsdt() {
-  const balance = state.financialDashboard?.totalBalance || {};
-  const usdtWallet = getFinancialWallet("USDT");
-  const ngnWallet = getFinancialWallet("NGN");
-  const rate = getUsdtToNgnRate();
-  const activeInvestments = getActiveInvestmentRecords();
-  const dashboardAvailable = Number(balance.usdt || 0);
-  const walletAvailable = Number(usdtWallet?.availableBalance || 0) + (rate ? Number(ngnWallet?.availableBalance || 0) / rate : 0);
-  const fallbackDashboardAvailable = activeInvestments.length
-    ? 0
-    : [balance.baseUsdt, balance.liveUsdt].map((value) => Number(value || 0)).find((value) => value > 0) || 0;
-  const availableUsdt = Math.max(dashboardAvailable || walletAvailable || fallbackDashboardAvailable || 0, 0);
-  const legacyActiveAmount = activeInvestments
-    .filter((investment) => !Array.isArray(investment.fundingSources) || !investment.fundingSources.length)
-    .reduce((sum, investment) => sum + Number(investment.amountUsdt || 0), 0);
-  return Math.max(availableUsdt - legacyActiveAmount, 0);
-}
-
 function getInvestmentDailyReturnNgn() {
   if (state.user?.role === "user") {
     return getUserDynamicPnlUsdt() * getUsdtToNgnRate();
@@ -2048,48 +2030,6 @@ function renderActionModal() {
           formatNumber,
         })
       : "";
-  }
-
-  if (state.actionModal.type === "join-trade") {
-    const trade = state.trades.find((item) => item.id === state.actionModal.tradeId);
-    if (!trade) {
-      return "";
-    }
-    const availableUsdt = getAvailableTradeJoinBalanceUsdt();
-    const availableNgn = getEquivalentAmount(availableUsdt, "USDT")?.amount || 0;
-    const pnlPercent = getTradePnlPercent(trade);
-    const defaultAmount = formatDecimalInput(availableUsdt);
-    return `
-      <div class="modal-backdrop">
-        <div class="modal-card action-modal-card">
-          <button class="modal-close" id="action-modal-close-btn" type="button">x</button>
-          <p class="modal-eyebrow neutral">Join trade</p>
-          <h3>${escapeHtml(trade.symbol || "Trade")}</h3>
-          <div class="action-metric-stack">
-            <div class="action-metric">
-              <span>Available</span>
-              <strong>${formatUsdtUnit(availableUsdt)}</strong>
-              <small>${availableNgn ? formatNaira(availableNgn) : "Set rate to show NGN"}</small>
-            </div>
-            <div class="action-metric">
-              <span>Baseline</span>
-              <strong class="${pnlPercent >= 0 ? "positive" : "negative"}">${pnlPercent >= 0 ? "+" : ""}${formatNumber(pnlPercent, 2)}%</strong>
-            </div>
-          </div>
-          <form id="join-trade-form" class="stack-form wallet-action-fields" data-join-trade-form="${trade.id}">
-            <label class="stack-label">
-              <span>Amount (USDT)</span>
-              <input id="join-trade-amount-input" name="amountUsdt" type="number" min="0" step="0.00000001" max="${formatDecimalInput(availableUsdt)}" value="${defaultAmount}" placeholder="0.00" required />
-            </label>
-            <p class="wallet-equivalent-preview" id="join-trade-equivalent-preview">${defaultAmount ? `Equivalent: ${formatEquivalentAmount(defaultAmount, "USDT")}` : "Equivalent: --"}</p>
-            <div class="modal-actions">
-              <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
-              <button class="button-primary shimmer-button" type="submit" ${availableUsdt > 0 ? "" : "disabled"}>Join</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
   }
 
   if (state.actionModal.type === "withdraw-blocked") {
@@ -3665,18 +3605,11 @@ async function submitUserBankAccount(form) {
   }).catch((error) => showError(error.message));
 }
 
-async function submitJoinTrade(form) {
-  const tradeId = form.dataset.joinTradeForm;
-  const data = Object.fromEntries(new FormData(form).entries());
-  if (!data.amountUsdt || Number(data.amountUsdt) <= 0) {
-    showError("Enter an amount to join.");
-    return;
-  }
-
+async function joinTradeNow(tradeId) {
   await withLoading(async () => {
     await api(`/api/trades/${encodeURIComponent(tradeId)}/join`, {
       method: "POST",
-      body: JSON.stringify({ amountUsdt: data.amountUsdt }),
+      body: JSON.stringify({}),
     });
     state.actionModal = null;
     await loadDashboardData();
@@ -3685,10 +3618,6 @@ async function submitJoinTrade(form) {
 }
 
 async function stopJoinedTrade(tradeId) {
-  if (!window.confirm("Stop this trade investment?")) {
-    return;
-  }
-
   await withLoading(async () => {
     await api(`/api/trades/${encodeURIComponent(tradeId)}/stop`, {
       method: "POST",
@@ -3803,15 +3732,6 @@ function updateWalletEquivalentPreview(amountInput, currency) {
     return;
   }
   const equivalent = formatEquivalentAmount(amountInput?.value || 0, currency);
-  preview.textContent = equivalent ? `Equivalent: ${equivalent}` : "Equivalent: --";
-}
-
-function updateJoinTradeEquivalentPreview(amountInput) {
-  const preview = document.getElementById("join-trade-equivalent-preview");
-  if (!preview) {
-    return;
-  }
-  const equivalent = formatEquivalentAmount(amountInput?.value || 0, "USDT");
   preview.textContent = equivalent ? `Equivalent: ${equivalent}` : "Equivalent: --";
 }
 
@@ -3960,7 +3880,7 @@ function renderSummaryCard() {
   const todayTone = todayValue > 0 ? "positive" : todayValue < 0 ? "negative" : "neutral";
   const userMirroredPnlPercentage = Number(state.financialDashboard?.performance?.todayPercentage || 0);
   const userBalanceTone = userDynamicPnlUsdt < 0 ? "balance-main-loss" : "balance-main-profit";
-  const userCardPnlTone = userDynamicPnlUsdt < 0 ? "card-pnl-loss" : "card-pnl-profit";
+  const userCardPnlTone = userDynamicPnlUsdt > 0 ? "card-pnl-profit" : userDynamicPnlUsdt < 0 ? "card-pnl-loss" : "card-pnl-neutral";
   const userDynamicPnlNgn = configuredRate ? userDynamicPnlUsdt * configuredRate : 0;
 
   if (isAdmin) {
@@ -4015,7 +3935,7 @@ function renderSummaryCard() {
               <p class="fintech-subline">
                 <span>${investmentUsdt < 0 ? "-" : ""}${formatUsdtUnit(Math.abs(investmentUsdt))}</span>
                 <span class="fintech-pnl-chip ${userCardPnlTone}">
-                  ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}% | ${formatSignedNaira(userDynamicPnlNgn, { positiveSign: userDynamicPnlNgn > 0 })}
+                  ${userMirroredPnlPercentage > 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}% | ${formatSignedNaira(userDynamicPnlNgn, { positiveSign: userDynamicPnlNgn > 0 })}
                 </span>
               </p>
             </button>
@@ -5661,26 +5581,8 @@ function renderDashboardShell() {
 }
 
 function bindInvestmentTradeActions() {
-  const joinTradeForm = document.getElementById("join-trade-form");
-  if (joinTradeForm) {
-    const amountInput = document.getElementById("join-trade-amount-input");
-    updateJoinTradeEquivalentPreview(amountInput);
-    if (amountInput) {
-      amountInput.addEventListener("input", () => updateJoinTradeEquivalentPreview(amountInput));
-    }
-    joinTradeForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      submitJoinTrade(joinTradeForm);
-    });
-  }
-
   document.querySelectorAll("[data-join-trade]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await withLoading(async () => {
-        await loadFinancialDashboard();
-        showActionModal({ type: "join-trade", tradeId: button.dataset.joinTrade });
-      }).catch((error) => showError(error.message));
-    });
+    button.addEventListener("click", () => joinTradeNow(button.dataset.joinTrade));
   });
 
   document.querySelectorAll("[data-stop-trade-investment]").forEach((button) => {
