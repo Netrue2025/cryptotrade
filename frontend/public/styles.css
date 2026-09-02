@@ -2381,6 +2381,12 @@ body[data-theme="dark"] .mirror-guide-pill {
   font-weight: 800;
 }
 
+.action-metric small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
 .wallet-status-badge {
   display: inline-flex;
   align-items: center;

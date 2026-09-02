@@ -570,6 +570,14 @@ function formatNumber(value, digits = 8) {
   });
 }
 
+function formatDecimalInput(value, digits = 8) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) {
+    return "";
+  }
+  return num.toFixed(digits).replace(/\.?0+$/, "");
+}
+
 function formatUsdt(value) {
   return `$${Number(value || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -1444,6 +1452,20 @@ function getUserLockedInvestmentUsdt() {
   return getActiveInvestmentRecords().reduce((sum, investment) => sum + Number(investment.amountUsdt || 0), 0);
 }
 
+function getAvailableTradeJoinBalanceUsdt() {
+  const balance = state.financialDashboard?.totalBalance || {};
+  const usdtWallet = getFinancialWallet("USDT");
+  const ngnWallet = getFinancialWallet("NGN");
+  const rate = getUsdtToNgnRate();
+  const dashboardAvailable = Number(balance.usdt || 0);
+  const walletAvailable = Number(usdtWallet?.availableBalance || 0) + (rate ? Number(ngnWallet?.availableBalance || 0) / rate : 0);
+  const availableUsdt = Math.max(dashboardAvailable || walletAvailable || 0, 0);
+  const legacyActiveAmount = getActiveInvestmentRecords()
+    .filter((investment) => !Array.isArray(investment.fundingSources) || !investment.fundingSources.length)
+    .reduce((sum, investment) => sum + Number(investment.amountUsdt || 0), 0);
+  return Math.max(availableUsdt - legacyActiveAmount, 0);
+}
+
 function getInvestmentDailyReturnNgn() {
   if (state.user?.role === "user") {
     return getUserDynamicPnlUsdt() * getUsdtToNgnRate();
@@ -2029,12 +2051,10 @@ function renderActionModal() {
     if (!trade) {
       return "";
     }
-    const balance = state.financialDashboard?.totalBalance || {};
-    const activeAmount = (state.trades || [])
-      .filter((item) => item.userInvestment?.status === "ACTIVE")
-      .reduce((sum, item) => sum + Number(item.userInvestment?.amountUsdt || 0), 0);
-    const availableUsdt = Math.max(Number(balance.usdt || 0) - activeAmount, 0);
+    const availableUsdt = getAvailableTradeJoinBalanceUsdt();
+    const availableNgn = getEquivalentAmount(availableUsdt, "USDT")?.amount || 0;
     const pnlPercent = getTradePnlPercent(trade);
+    const defaultAmount = formatDecimalInput(availableUsdt);
     return `
       <div class="modal-backdrop">
         <div class="modal-card action-modal-card">
@@ -2045,6 +2065,7 @@ function renderActionModal() {
             <div class="action-metric">
               <span>Available</span>
               <strong>${formatUsdtUnit(availableUsdt)}</strong>
+              <small>${availableNgn ? formatNaira(availableNgn) : "Set rate to show NGN"}</small>
             </div>
             <div class="action-metric">
               <span>Baseline</span>
@@ -2054,11 +2075,12 @@ function renderActionModal() {
           <form id="join-trade-form" class="stack-form wallet-action-fields" data-join-trade-form="${trade.id}">
             <label class="stack-label">
               <span>Amount (USDT)</span>
-              <input name="amountUsdt" type="number" min="0" step="0.00000001" max="${availableUsdt}" value="${availableUsdt ? formatNumber(availableUsdt, 8) : ""}" placeholder="0.00" required />
+              <input id="join-trade-amount-input" name="amountUsdt" type="number" min="0" step="0.00000001" max="${formatDecimalInput(availableUsdt)}" value="${defaultAmount}" placeholder="0.00" required />
             </label>
+            <p class="wallet-equivalent-preview" id="join-trade-equivalent-preview">${defaultAmount ? `Equivalent: ${formatEquivalentAmount(defaultAmount, "USDT")}` : "Equivalent: --"}</p>
             <div class="modal-actions">
               <button class="button-secondary" id="action-modal-cancel-btn" type="button">Cancel</button>
-              <button class="button-primary shimmer-button" type="submit">Join</button>
+              <button class="button-primary shimmer-button" type="submit" ${availableUsdt > 0 ? "" : "disabled"}>Join</button>
             </div>
           </form>
         </div>
@@ -3642,6 +3664,11 @@ async function submitUserBankAccount(form) {
 async function submitJoinTrade(form) {
   const tradeId = form.dataset.joinTradeForm;
   const data = Object.fromEntries(new FormData(form).entries());
+  if (!data.amountUsdt || Number(data.amountUsdt) <= 0) {
+    showError("Enter an amount to join.");
+    return;
+  }
+
   await withLoading(async () => {
     await api(`/api/trades/${encodeURIComponent(tradeId)}/join`, {
       method: "POST",
@@ -3772,6 +3799,15 @@ function updateWalletEquivalentPreview(amountInput, currency) {
     return;
   }
   const equivalent = formatEquivalentAmount(amountInput?.value || 0, currency);
+  preview.textContent = equivalent ? `Equivalent: ${equivalent}` : "Equivalent: --";
+}
+
+function updateJoinTradeEquivalentPreview(amountInput) {
+  const preview = document.getElementById("join-trade-equivalent-preview");
+  if (!preview) {
+    return;
+  }
+  const equivalent = formatEquivalentAmount(amountInput?.value || 0, "USDT");
   preview.textContent = equivalent ? `Equivalent: ${equivalent}` : "Equivalent: --";
 }
 
@@ -5623,6 +5659,11 @@ function renderDashboardShell() {
 function bindInvestmentTradeActions() {
   const joinTradeForm = document.getElementById("join-trade-form");
   if (joinTradeForm) {
+    const amountInput = document.getElementById("join-trade-amount-input");
+    updateJoinTradeEquivalentPreview(amountInput);
+    if (amountInput) {
+      amountInput.addEventListener("input", () => updateJoinTradeEquivalentPreview(amountInput));
+    }
     joinTradeForm.addEventListener("submit", (event) => {
       event.preventDefault();
       submitJoinTrade(joinTradeForm);
