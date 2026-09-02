@@ -1099,6 +1099,8 @@ function icon(name) {
       '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18"/><path d="M7 15h4"/>',
     gift:
       '<path d="M20 12v8H4v-8"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H8.5a2 2 0 1 1 2-2c0 2-2.5 2-2.5 2"/><path d="M12 8h3.5a2 2 0 1 0-2-2c0 2 2.5 2 2.5 2"/>',
+    lock:
+      '<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
     edit:
       '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z"/>',
     settings:
@@ -2948,7 +2950,7 @@ async function refreshTradeStatusData() {
 function refreshTradeSectionsDom() {
   const homeHost = document.querySelector("[data-home-trades-host]");
   if (homeHost) {
-    homeHost.innerHTML = renderOpenOrdersSection();
+    homeHost.innerHTML = state.user?.role === "user" ? renderHomeOpenTradeSection() : renderOpenOrdersSection();
   }
 
   const historyHost = document.querySelector("[data-history-host]");
@@ -2957,6 +2959,7 @@ function refreshTradeSectionsDom() {
   }
 
   bindTradeActionButtons();
+  bindInvestmentTradeActions();
   bindTradeDisclosureToggles();
   bindHistoryActions();
   refreshTradeDom();
@@ -3887,17 +3890,6 @@ function renderSummaryCard() {
   const userMirroredPnlPercentage = Number(state.financialDashboard?.performance?.todayPercentage || 0);
   const userBalanceTone = userDynamicPnlUsdt < 0 ? "balance-main-loss" : "balance-main-profit";
   const userCardPnlTone = userDynamicPnlUsdt < 0 ? "card-pnl-loss" : "card-pnl-profit";
-  const chips = isAdmin
-    ? [
-        "Spot",
-        `Mirror ${state.users.filter((user) => user.mirrorEnabled).length}`,
-        `Linked ${state.users.filter((user) => user.bybitConnected || user.binanceConnected).length}`,
-      ]
-    : [
-        "Spot",
-        state.user?.mirrorEnabled ? "Mirror on" : "Mirror off",
-        state.user?.exchangeConnected ? exchangeLabel : "Setup",
-      ];
 
   if (isAdmin) {
     const adminBalanceNgn = configuredRate ? portfolioBalance * configuredRate : Number(state.totalNgn || 0);
@@ -3939,38 +3931,25 @@ function renderSummaryCard() {
             <span class="card-icon">${icon("card")}</span>
             <span>Investment</span>
           </div>
-          <h2 class="${userBalanceTone}">${investmentNgn > 0 ? formatNaira(investmentNgn) : "--"}</h2>
-          <div class="fintech-balance-row">
-            <span>${formatUsdtUnit(investmentUsdt)}</span>
-            <span>${formatNaira(investmentNgn)}</span>
+          <div class="fintech-investment-grid">
+            <div class="fintech-pnl-stack">
+              <h2 class="${userBalanceTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))}</h2>
+              <p class="fintech-subline">${userDynamicPnlUsdt >= 0 ? "+" : "-"}${formatUsdtUnit(Math.abs(userDynamicPnlUsdt))}</p>
+              <p class="muted-bright">
+                Live P&L <span class="${userCardPnlTone}">${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
+              </p>
+              <p class="fintech-total-line">Balance ${formatNaira(investmentNgn)} / ${formatUsdtUnit(investmentUsdt)}</p>
+            </div>
+            <div class="locked-investment-box">
+              <span class="lock-badge">${icon("lock")}</span>
+              <small>Locked</small>
+              <strong>${formatUsdtUnit(lockedInvestmentUsdt)}</strong>
+              ${configuredRate ? `<span>${formatNaira(lockedInvestmentUsdt * configuredRate)}</span>` : ""}
+            </div>
           </div>
-          ${lockedInvestmentUsdt > 0 ? `<p class="locked-investment-line">Locked ${formatUsdtUnit(lockedInvestmentUsdt)}${configuredRate ? ` | ${formatNaira(lockedInvestmentUsdt * configuredRate)}` : ""}</p>` : ""}
-          <p class="muted-bright">
-            P&L <span class="${userCardPnlTone}">${investmentDailyReturn >= 0 ? "+" : "-"}${formatNaira(Math.abs(investmentDailyReturn))} ${userMirroredPnlPercentage >= 0 ? "+" : ""}${formatNumber(userMirroredPnlPercentage, 2)}%</span>
-          </p>
           <div class="hero-actions">
             <button class="hero-action-btn" id="netrue-deposit-btn" type="button">${icon("bank")} Deposit</button>
             <button class="hero-action-btn ghost" id="netrue-withdraw-btn" type="button">${icon("download")} Withdraw</button>
-          </div>
-          <div class="carousel-hint" aria-hidden="true">
-            <span class="carousel-bar active"></span>
-            <span class="carousel-bar"></span>
-          </div>
-        </article>
-        <article class="summary-hero balance-slide">
-          ${accountLoading ? renderSectionLoadingOverlay("Loading balances", `Syncing your ${exchangeLabel} balance cards`) : ""}
-          <div>
-            <p class="eyebrow light">${exchangeLabel}</p>
-            <h2>${formatUsdt(portfolioBalance)}</h2>
-            <div class="hero-return-tags">
-              <span class="hero-chip today-return-chip">
-                <span>Today</span>
-                <strong class="${todayTone}">${todayValue >= 0 ? "+" : "-"}${formatUsdt(Math.abs(todayValue))} ${todayPercent >= 0 ? "+" : ""}${formatNumber(todayPercent, 2)}%</strong>
-              </span>
-            </div>
-          </div>
-          <div class="hero-chip-row">
-            ${chips.map((chip) => `<span class="hero-chip">${chip}</span>`).join("")}
           </div>
         </article>
       </section>
@@ -5230,6 +5209,24 @@ function renderSignalsPane() {
     : `<section class="mobile-card"><p class="muted-copy">Signal dashboard is loading...</p></section>`;
 }
 
+function renderHomeOpenTradeSection() {
+  return window.SignalPage?.renderOpenTradeInvestmentBoard
+    ? window.SignalPage.renderOpenTradeInvestmentBoard({
+        trades: state.trades,
+        user: state.user,
+        formatNumber,
+        formatUsdtUnit,
+        getTradePnlPercent,
+        getTradeCurrentValue,
+        getTradeEntryPrice,
+        getTradeCurrentMarket,
+        renderExchangeBadge,
+        title: "Open Trades",
+        description: "Join or stop trades from the live signal board.",
+      })
+    : `<section class="mobile-card"><p class="muted-copy">Open trades are loading...</p></section>`;
+}
+
 function renderProfitLossReportCard() {
   const rows = getProfitLossReportRows(state.reportPeriod);
   const monthValue = Number(state.monthPnlValue || 0);
@@ -5480,18 +5477,24 @@ function renderHistoryPane() {
 }
 
 function renderHomePane() {
-    return `
-      ${renderMarketModeSwitch()}
-      ${renderSummaryCard()}
+    const userHomeContent = `
       ${renderWalletHistorySection({
         limit: 10,
-        title: "Requests",
-        description: "Deposits and withdrawals.",
+        title: "Transactions",
+        description: "Latest deposits and withdrawals.",
         requestsOnly: true,
         showMore: true,
       })}
+      <div data-home-trades-host>${renderHomeOpenTradeSection()}</div>
+    `;
+
+    return `
+      ${renderMarketModeSwitch()}
+      ${renderSummaryCard()}
       ${
-        isFuturesMode()
+        state.user.role === "user"
+          ? userHomeContent
+          : isFuturesMode()
           ? renderFuturesDashboard()
           : `
             ${state.user.role === "admin" ? renderTradeTicket() : ""}

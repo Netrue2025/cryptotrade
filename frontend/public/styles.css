@@ -28,6 +28,8 @@
   --nav-active-bg: rgba(255, 255, 255, 0.12);
   --modal-bg: #ffffff;
   --contact-bg: linear-gradient(180deg, #f6f9ff, #edf4ff);
+  --app-font: "Inter", "Avenir Next", "Nunito Sans", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --number-font: "Inter", "Avenir Next", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 body[data-theme="dark"] {
@@ -66,11 +68,27 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--text);
-  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+  font-family: var(--app-font);
+  letter-spacing: 0;
   background:
     radial-gradient(circle at top left, var(--bg-glow-1), transparent 24rem),
     radial-gradient(circle at top right, var(--bg-glow-2), transparent 20rem),
     linear-gradient(180deg, var(--bg-start) 0%, var(--bg-end) 100%);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+strong {
+  letter-spacing: 0;
 }
 
 body[data-app-shell="guest"] .shell {
@@ -1309,6 +1327,88 @@ body[data-theme="dark"] .section-loading-card {
   font-weight: 800;
 }
 
+.fintech-card h2 {
+  font-family: var(--number-font);
+  letter-spacing: 0;
+}
+
+.fintech-investment-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.fintech-pnl-stack {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fintech-pnl-stack h2 {
+  margin: 0;
+  line-height: 1;
+}
+
+.fintech-subline,
+.fintech-total-line {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 850;
+}
+
+.fintech-subline {
+  font-size: 1rem;
+}
+
+.fintech-total-line {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.locked-investment-box {
+  min-width: 104px;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.locked-investment-box small {
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.locked-investment-box strong {
+  color: #fff;
+  font-family: var(--number-font);
+  font-size: 0.94rem;
+}
+
+.locked-investment-box span:not(.lock-badge) {
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.lock-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 14px;
+  display: inline-grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.lock-badge .nav-icon {
+  width: 15px;
+  height: 15px;
+}
+
 .balance-main-profit {
   color: #fff;
 }
@@ -1805,6 +1905,20 @@ body[data-theme="dark"] .mirror-guide-pill {
 
   .signal-board-actions {
     justify-content: flex-start;
+  }
+
+  .fintech-investment-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(88px, auto);
+    gap: 12px;
+  }
+
+  .locked-investment-box {
+    min-width: 88px;
+  }
+
+  .fintech-total-line {
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 }
 
