@@ -668,6 +668,30 @@ button {
   overflow: hidden;
 }
 
+.settings-card {
+  overflow: visible;
+  min-width: 0;
+}
+
+.settings-card .section-head,
+.settings-card .stack-form,
+.settings-card .card-list,
+.settings-card .contact-card {
+  min-width: 0;
+}
+
+.settings-card input,
+.settings-card select,
+.settings-card textarea,
+.settings-card button,
+.settings-card .muted-copy,
+.settings-card p,
+.settings-card strong,
+.settings-card code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .intro-card {
   background: linear-gradient(150deg, rgba(47, 125, 246, 0.98), rgba(31, 90, 182, 0.95));
   color: #fff;

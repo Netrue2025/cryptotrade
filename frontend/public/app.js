@@ -4997,7 +4997,7 @@ function renderAdminFinancePanel() {
   const selectedCount = state.selectedFinanceHistoryIds.length;
   const allSelected = !!historyKeys.length && selectedCount === historyKeys.length;
   return `
-    <section class="mobile-card${loadingClass(state.loadingAdminFinance)}" data-section="finance">
+    <section class="mobile-card settings-card${loadingClass(state.loadingAdminFinance)}" data-section="finance">
       ${state.loadingAdminFinance ? renderSectionLoadingOverlay("Loading finance queue", "Checking pending deposits and withdrawals") : ""}
       <div class="section-head">
         <div>
@@ -5046,7 +5046,7 @@ function renderSettingsPane() {
   const depositSettingValue = (key, fallback = "") =>
     adminDepositSettingsDraft[key] !== undefined ? adminDepositSettingsDraft[key] : fallback;
   return `
-      <section class="mobile-card">
+      <section class="mobile-card settings-card">
         <div class="section-head">
           <div>
             <h3>Appearance</h3>
@@ -5058,7 +5058,7 @@ function renderSettingsPane() {
           <button class="theme-btn ${state.theme === "dark" ? "active" : ""}" data-theme-mode="dark" type="button">Dark</button>
         </div>
       </section>
-      <section class="mobile-card${loadingClass(state.loadingUsers)}">
+      <section class="mobile-card settings-card${loadingClass(state.loadingUsers)}">
         ${state.loadingUsers ? renderSectionLoadingOverlay("Loading users", "Pulling linked account details") : ""}
         <div class="section-head">
           <div>
@@ -5119,7 +5119,7 @@ function renderSettingsPane() {
       ${
         state.user.role === "user"
           ? `
-            <section class="mobile-card">
+            <section class="mobile-card settings-card">
               <div class="section-head">
                 <div>
                   <h3>Withdrawal Bank</h3>
@@ -5139,7 +5139,7 @@ function renderSettingsPane() {
       ${
         state.user.role === "admin"
           ? `
-            <section class="mobile-card">
+            <section class="mobile-card settings-card">
               <div class="section-head">
                 <div>
                   <h3>Deposit Accounts</h3>
@@ -5157,7 +5157,7 @@ function renderSettingsPane() {
                 <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save</button>
               </form>
             </section>
-            <section class="mobile-card">
+            <section class="mobile-card settings-card">
               <div class="section-head">
                 <div>
                   <h3>Signal Auto Trade</h3>
@@ -5184,7 +5184,7 @@ function renderSettingsPane() {
           : ""
       }
       ${renderAdminFinancePanel()}
-      <section class="mobile-card">
+      <section class="mobile-card settings-card">
         <div class="section-head">
           <div>
             <h3>${state.user.role === "admin" ? "Registered Users" : "Account Summary"}</h3>
@@ -5200,7 +5200,7 @@ function renderSettingsPane() {
           }
         </div>
       </section>
-      <section class="mobile-card" data-section="support">
+      <section class="mobile-card settings-card" data-section="support">
         <div class="section-head">
           <div>
             <h3>Support</h3>
