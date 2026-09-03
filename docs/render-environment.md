@@ -34,7 +34,7 @@ BYBIT_USDT_NGN_RATE=
 Open the frontend static site, then go to **Environment** and add:
 
 ```env
-TRADE_API_BASE_URL=https://your-backend.onrender.com
+TRADE_API_BASE_URL=https://trade-backend-0bdr.onrender.com
 ```
 
 Redeploy the frontend after changing this value so `public/config.js` is rebuilt with the production backend URL.
