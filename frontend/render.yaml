@@ -7,4 +7,4 @@ services:
     staticPublishPath: public
     envVars:
       - key: TRADE_API_BASE_URL
-        sync: false
+        value: https://trade-backend-0bdr.onrender.com
