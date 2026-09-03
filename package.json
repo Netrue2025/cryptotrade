@@ -1,0 +1,27 @@
+{
+  "name": "trade-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Crypto-only trading MVP with admin dashboard, user mirroring, and Bybit spot integration.",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "signal-engine:start": "node backend/signal-engine/signalEngine.js",
+    "test": "node --test backend/tests",
+    "check": "node --check backend/server.js && node --check backend/lib/db.js && node --check backend/lib/security.js && node --check backend/lib/money.js && node --check backend/lib/bybit.js && node --check backend/lib/binance.js && node --check backend/services/financialService.js && node --check backend/services/paystackService.js && node --check backend/services/telegramService.js && node --check backend/services/tradeListener.js && node --check backend/services/tradeLearning.js && node --check backend/services/orderEvents.js && node --check backend/models/subscriberModel.js && node --check backend/utils/broadcast.js && node --check backend/src/config/signalConfig.js && node --check backend/src/utils/logger.js && node --check backend/src/utils/candleMath.js && node --check backend/src/events/signalBus.js && node --check backend/src/models/Signal.js && node --check backend/src/ml/tradeLearning.js && node --check backend/src/services/marketDataService.js && node --check backend/src/services/telegramService.js && node --check backend/src/services/autoTradeService.js && node --check backend/src/services/socketSignalService.js && node --check backend/src/services/signalEngine.js && node --check backend/src/controllers/signalController.js && node --check backend/signal-engine/strategies/helpers.js && node --check backend/signal-engine/strategies/supportStrategy.js && node --check backend/signal-engine/strategies/breakoutStrategy.js && node --check backend/signal-engine/strategies/emaRsiStrategy.js && node --check backend/signal-engine/strategies/proStrategy.js && node --check backend/signal-engine/signalEngine.js && node --check frontend/public/app.js && node --check frontend/public/components/signal-page.js"
+  },
+  "engines": {
+    "node": ">=20.x"
+  },
+  "dependencies": {
+    "axios": "^1.13.1",
+    "lamejs": "^1.2.1",
+    "lightweight-charts": "^5.1.0",
+    "mongodb": "^6.18.0",
+    "node-cron": "^4.2.1",
+    "node-telegram-bot-api": "^0.66.0",
+    "socket.io": "^4.8.1",
+    "technicalindicators": "^3.1.0",
+    "ws": "^8.20.0"
+  }
+}

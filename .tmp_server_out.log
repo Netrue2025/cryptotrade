@@ -1,0 +1,11 @@
+Trade learning service started.
+Trade learning history sync complete. 21 closed trades indexed.
+Trade MVP running on http://localhost:3000 using MongoDB storage
+Telegram signal bot diagnostics: {"tokenLoaded":true,"chatIdLoaded":true,"tokenPreview":"862517...6Axw","queueDepth":0}
+[2026-04-08T15:07:24.669Z] [signals] [info] Signal socket connected: qadr_Iw5IQEoX6BgAAAB
+Telegram bot started
+Signal engine is running on 15m.
+[2026-04-08T15:07:27.738Z] [signals] [info] Signal socket connected: G5679C1P8L_H-SZmAAAD
+Telegram bot polling mode active.
+Telegram trade bot diagnostics: {"tokenLoaded":true,"tokenPreview":"820699...CvRM","started":true,"polling":true,"pollingActive":true,"webhook":false,"subscriberStoreEnabled":true,"lastPollingError":null}
+Telegram trade listener is running.

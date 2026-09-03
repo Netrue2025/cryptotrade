@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trade MVP</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <div id="topbar-actions" hidden></div>
+      <main id="app"></main>
+    </div>
+    <script src="/config.js"></script>
+    <script src="/vendor/lightweight-charts.js"></script>
+    <script>
+      document.write('<script src="' + (window.TRADE_API_BASE_URL || "") + '/socket.io/socket.io.js"><\/script>');
+    </script>
+    <script src="/components/signal-page.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

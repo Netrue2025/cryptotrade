@@ -1,0 +1,14 @@
+{
+  "name": "trade-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static frontend for the Netrue crypto trading platform.",
+  "scripts": {
+    "build": "node scripts/write-config.js",
+    "start": "npx --yes serve public",
+    "check": "node --check public/app.js && node --check public/components/signal-page.js"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}
