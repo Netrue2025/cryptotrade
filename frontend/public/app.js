@@ -102,6 +102,9 @@ const state = {
   adminDeposits: [],
   adminWithdrawals: [],
   adminTransactions: [],
+  paymentBanks: [],
+  paymentBanksLoadedAt: 0,
+  resolvedBankAccount: null,
   financialDashboard: null,
   notifications: [],
   showNotifications: false,
@@ -156,6 +159,7 @@ const state = {
   socket: null,
   socketRetry: null,
   socketRefreshTimer: null,
+  routeScrollSection: "",
   signalSocket: null,
   tradeRefreshTimer: null,
   signalFeed: {
@@ -520,6 +524,10 @@ async function openWalletActionModal(type) {
     if (type === "withdraw" && getActiveInvestmentRecords().length) {
       showActionModal({ type: "withdraw-blocked" });
       return;
+    }
+    if (type === "withdraw") {
+      await loadPaymentBanks().catch(() => []);
+      state.resolvedBankAccount = getSavedBankAccount()?.verified ? getSavedBankAccount() : null;
     }
     showActionModal({ type, currency: "" });
   }).catch((error) => showError(error.message));
@@ -1508,6 +1516,21 @@ async function loadFinancialDashboard() {
   state.notifications = state.financialDashboard?.notifications || [];
 }
 
+async function loadPaymentBanks({ force = false } = {}) {
+  if (!state.user) {
+    state.paymentBanks = [];
+    return [];
+  }
+  const isFresh = state.paymentBanks.length && Date.now() - Number(state.paymentBanksLoadedAt || 0) < 6 * 60 * 60 * 1000;
+  if (!force && isFresh) {
+    return state.paymentBanks;
+  }
+  const payload = await api("/api/payments/banks");
+  state.paymentBanks = payload.banks || [];
+  state.paymentBanksLoadedAt = Date.now();
+  return state.paymentBanks;
+}
+
 async function loadAdminFinanceQueues() {
   if (!state.user || state.user.role !== "admin") {
     state.adminDeposits = [];
@@ -2110,6 +2133,11 @@ function renderActionModal() {
     const usdtWallet = getFinancialWallet("USDT");
     const ngnWallet = getFinancialWallet("NGN");
     const savedBank = getSavedBankAccount();
+    const resolvedBank = state.resolvedBankAccount || (savedBank.verified ? savedBank : null);
+    const selectedBankCode = state.actionModal.bankCode || resolvedBank?.bankCode || savedBank.bankCode || "";
+    const bankOptions = (state.paymentBanks || [])
+      .map((bank) => `<option value="${escapeHtml(bank.code)}" ${selectedBankCode === bank.code ? "selected" : ""}>${escapeHtml(bank.name)}</option>`)
+      .join("");
     const liveBalance = state.financialDashboard?.totalBalance || {};
     const liveAvailableUsdt = Number(liveBalance.liveUsdt || liveBalance.usdt || usdtWallet?.availableBalance || 0);
     const liveAvailableNgn = Number(liveBalance.liveNgnEquivalent || liveBalance.ngnEquivalent || ngnWallet?.availableBalance || 0);
@@ -2191,20 +2219,27 @@ function renderActionModal() {
         <p class="wallet-equivalent-preview" id="wallet-equivalent-preview">Equivalent: --</p>
         <label class="stack-label">
           <span>Bank</span>
-          <input id="wallet-bank-input" type="text" placeholder="Bank name" value="${escapeHtml(savedBank.bankName || "")}" />
-        </label>
-        <label class="stack-label">
-          <span>Account name</span>
-          <input id="wallet-account-name-input" type="text" placeholder="Account name" value="${escapeHtml(savedBank.accountName || state.user?.name || "")}" />
+          <select id="wallet-bank-code-input">
+            <option value="">Choose bank</option>
+            ${bankOptions}
+          </select>
         </label>
         <label class="stack-label">
           <span>Account number</span>
-          <input id="wallet-account-input" type="text" inputmode="numeric" maxlength="10" placeholder="10 digits" value="${escapeHtml(savedBank.accountNumber || "")}" />
+          <input id="wallet-account-input" type="text" inputmode="numeric" maxlength="10" placeholder="10 digits" value="${escapeHtml(resolvedBank?.accountNumber || savedBank.accountNumber || "")}" />
         </label>
-        <label class="inline-check wallet-save-bank-row">
-          <input id="wallet-save-bank-input" type="checkbox" checked />
-          <span>Save bank</span>
-        </label>
+        <button class="button-secondary shimmer-button" id="wallet-resolve-bank-btn" type="button">${icon("bank")} Resolve</button>
+        ${
+          resolvedBank?.verified
+            ? `
+              <div class="wallet-instructions verified-bank-card">
+                <span>${escapeHtml(resolvedBank.bankName || "Bank")}</span>
+                <strong>${escapeHtml(resolvedBank.accountName || "")}</strong>
+                <code>${escapeHtml(resolvedBank.maskedAccountNumber || resolvedBank.accountNumber || "")}</code>
+              </div>
+            `
+            : `<p class="muted-copy">Resolve your bank account to continue.</p>`
+        }
       `
       : currency === "USDT"
         ? `
@@ -2611,6 +2646,7 @@ function bindAuthForms() {
         state.user = normalizeUserPayload(await requireSessionUser());
         setSelectedExchange(state.user.activeExchange || "bybit");
         state.activeTab = "home";
+        applyRouteTarget();
         await loadDashboardData();
         showNotice(`Welcome back, ${state.user.name}`);
       }).catch((error) => showError(error.message));
@@ -2629,6 +2665,7 @@ function bindAuthForms() {
         state.user = normalizeUserPayload(await requireSessionUser());
         setSelectedExchange(state.user.activeExchange || "bybit");
         state.activeTab = "home";
+        applyRouteTarget();
         await loadDashboardData();
         showNotice("Account created");
       }).catch((error) => showError(error.message));
@@ -3292,6 +3329,11 @@ async function loadDashboardData() {
   const settingsPromise = loadSavedExchangeSettings(getActiveExchange()).then(() => {
     render();
   });
+  const paymentBanksPromise = state.activeTab === "settings" || state.actionModal?.type === "withdraw"
+    ? loadPaymentBanks().then(() => {
+        render();
+      }).catch(() => [])
+    : Promise.resolve();
   const signalAutoTradePromise = loadSignalAutoTradeSettings().then(() => {
     render();
   });
@@ -3368,6 +3410,7 @@ async function loadDashboardData() {
   startTradeRefreshTimer();
   void accountPromise;
   void settingsPromise;
+  void paymentBanksPromise;
   void signalAutoTradePromise;
   void futuresPromise;
   void watchlistPromise;
@@ -3536,6 +3579,7 @@ async function submitAdminFinanceAction(kind, id) {
   const actionMap = {
     approveDeposit: `/api/admin/deposits/${encodeURIComponent(id)}/approve`,
     rejectDeposit: `/api/admin/deposits/${encodeURIComponent(id)}/reject`,
+    approveWithdrawal: `/api/admin/withdrawals/${encodeURIComponent(id)}/approve`,
     processWithdrawal: `/api/admin/withdrawals/${encodeURIComponent(id)}/process`,
     completeWithdrawal: `/api/admin/withdrawals/${encodeURIComponent(id)}/complete`,
     rejectWithdrawal: `/api/admin/withdrawals/${encodeURIComponent(id)}/reject`,
@@ -3587,12 +3631,17 @@ async function submitAdminDepositSettings(form) {
 
 async function submitUserBankAccount(form) {
   const data = Object.fromEntries(new FormData(form).entries());
+  const bank = (state.paymentBanks || []).find((item) => item.code === data.bankCode);
+  if (!data.bankCode || !/^\d{10}$/.test(String(data.accountNumber || "").replace(/\D/g, ""))) {
+    showError("Choose bank and enter 10-digit account number.");
+    return;
+  }
   await withLoading(async () => {
     const payload = await api("/api/user/bank-account", {
       method: "PUT",
       body: JSON.stringify({
-        bankName: data.bankName || "",
-        accountName: data.accountName || "",
+        bankName: bank?.name || "",
+        bankCode: data.bankCode || "",
         accountNumber: String(data.accountNumber || "").replace(/\D/g, ""),
       }),
     });
@@ -3600,8 +3649,46 @@ async function submitUserBankAccount(form) {
       ...(state.financialDashboard || {}),
       bankAccount: payload.bankAccount,
     };
+    state.resolvedBankAccount = payload.bankAccount;
     render();
-    showNotice("Bank saved");
+    showNotice("Bank verified");
+  }).catch((error) => showError(error.message));
+}
+
+async function resolveSelectedBankAccount() {
+  const bankCode = document.getElementById("wallet-bank-code-input")?.value || "";
+  const accountNumber = document.getElementById("wallet-account-input")?.value?.replace(/\D/g, "").trim() || "";
+  const bank = (state.paymentBanks || []).find((item) => item.code === bankCode);
+  if (!bankCode || !/^\d{10}$/.test(accountNumber)) {
+    showError("Choose bank and enter 10-digit account number.");
+    return;
+  }
+  await withLoading(async () => {
+    const payload = await api("/api/payments/resolve-account", {
+      method: "POST",
+      body: JSON.stringify({
+        bankName: bank?.name || "",
+        bankCode,
+        accountNumber,
+      }),
+    });
+    state.resolvedBankAccount = payload.bankAccount;
+    state.financialDashboard = {
+      ...(state.financialDashboard || {}),
+      bankAccount: payload.bankAccount,
+      bankAccounts: [
+        payload.bankAccount,
+        ...((state.financialDashboard?.bankAccounts || []).filter(
+          (account) => account.id !== payload.bankAccount.id
+        )),
+      ],
+    };
+    state.actionModal = {
+      ...state.actionModal,
+      bankCode,
+    };
+    render();
+    showNotice("Account resolved");
   }).catch((error) => showError(error.message));
 }
 
@@ -4918,17 +5005,20 @@ function renderAdminDepositCard(deposit) {
 }
 
 function renderAdminWithdrawalCard(withdrawal) {
-  const destination = withdrawal.destination || {};
+  const destination = withdrawal.bank || withdrawal.destination || {};
   const destinationCopy = destination.type === "NGN_BANK"
-    ? `${destination.bankName || ""} ${destination.accountNumber || ""}`.trim()
+    ? `${destination.bankName || ""} ${destination.maskedAccountNumber || destination.accountNumber || ""}`.trim()
     : `${destination.network || ""} ${destination.address || ""}`.trim();
   const fundingCopy = (withdrawal.fundingSources || [])
     .map((source) => formatCurrencyAmount(source.amount, source.currency))
     .join(" + ");
   const equivalent = formatRecordEquivalent(withdrawal, withdrawal.currency);
   const historyKey = financeHistoryKey("withdrawal", withdrawal.id);
-  const canProcess = withdrawal.status === "PENDING";
-  const canFinalize = ["PENDING", "PROCESSING"].includes(withdrawal.status);
+  const isNgnBankWithdrawal = withdrawal.currency === "NGN" && destination.type === "NGN_BANK";
+  const canApprove = withdrawal.status === "PENDING" && isNgnBankWithdrawal;
+  const canProcess = withdrawal.status === "PENDING" && !isNgnBankWithdrawal;
+  const canFinalize = ["PENDING", "PROCESSING"].includes(withdrawal.status) && !isNgnBankWithdrawal;
+  const canReject = withdrawal.status === "PENDING";
   return `
     <div class="asset-card admin-finance-card">
       <label class="history-checkbox finance-history-checkbox" aria-label="Select withdrawal">
@@ -4946,15 +5036,16 @@ function renderAdminWithdrawalCard(withdrawal) {
         <p class="muted-copy">${escapeHtml(destinationCopy || "Destination unavailable")}</p>
       </div>
       <div class="asset-values">
-        <strong>${escapeHtml(withdrawal.status)}</strong>
+        <span class="wallet-status-badge ${walletStatusClass(withdrawal.status)}">${escapeHtml(formatWalletRequestStatus(withdrawal.status))}</span>
         <p class="muted-copy">${withdrawal.submittedAt ? new Date(withdrawal.submittedAt).toLocaleString() : ""}</p>
         ${
-          canFinalize
+          canApprove || canFinalize || canReject
             ? `
               <div class="trade-actions-inline admin-user-actions">
+                ${canApprove ? `<button class="micro-btn primary" data-admin-withdrawal-approve="${withdrawal.id}" type="button">Approve</button>` : ""}
                 ${canProcess ? `<button class="micro-btn" data-admin-withdrawal-process="${withdrawal.id}" type="button">Process</button>` : ""}
-                <button class="micro-btn primary" data-admin-withdrawal-complete="${withdrawal.id}" type="button">Complete</button>
-                <button class="micro-btn danger" data-admin-withdrawal-reject="${withdrawal.id}" type="button">Reject</button>
+                ${canFinalize ? `<button class="micro-btn primary" data-admin-withdrawal-complete="${withdrawal.id}" type="button">Complete</button>` : ""}
+                ${canReject ? `<button class="micro-btn danger" data-admin-withdrawal-reject="${withdrawal.id}" type="button">Reject</button>` : ""}
               </div>
             `
             : ""
@@ -5043,6 +5134,9 @@ function renderSettingsPane() {
   const exchangeRateSettings = financeSettings.exchangeRate || {};
   const adminDepositSettingsDraft = state.adminDepositSettingsDraft || {};
   const savedBank = getSavedBankAccount();
+  const settingsBankOptions = (state.paymentBanks || [])
+    .map((bank) => `<option value="${escapeHtml(bank.code)}" ${savedBank.bankCode === bank.code ? "selected" : ""}>${escapeHtml(bank.name)}</option>`)
+    .join("");
   const depositSettingValue = (key, fallback = "") =>
     adminDepositSettingsDraft[key] !== undefined ? adminDepositSettingsDraft[key] : fallback;
   return `
@@ -5127,10 +5221,16 @@ function renderSettingsPane() {
                 </div>
               </div>
               <form id="user-bank-account-form" class="stack-form subtle-form">
-                <label>Bank <input name="bankName" value="${escapeHtml(savedBank.bankName || "")}" placeholder="Bank name" /></label>
-                <label>Account name <input name="accountName" value="${escapeHtml(savedBank.accountName || state.user?.name || "")}" placeholder="Account name" /></label>
+                <label>
+                  Bank
+                  <select name="bankCode">
+                    <option value="">Choose bank</option>
+                    ${settingsBankOptions}
+                  </select>
+                </label>
                 <label>Account number <input name="accountNumber" value="${escapeHtml(savedBank.accountNumber || "")}" placeholder="10 digits" inputmode="numeric" maxlength="10" /></label>
-                <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Save</button>
+                ${savedBank.verified ? `<p class="muted-copy">Verified: ${escapeHtml(savedBank.accountName || "")} | ${escapeHtml(savedBank.maskedAccountNumber || savedBank.accountNumber || "")}</p>` : ""}
+                <button class="button-secondary shimmer-button" type="submit">${icon("bank")} Verify</button>
               </form>
             </section>
           `
@@ -5330,13 +5430,16 @@ function renderWalletHistoryRow(item) {
 
 function walletStatusClass(status) {
   const value = String(status || "").toUpperCase();
-  if (["APPROVED", "COMPLETED", "SUCCESSFUL"].includes(value)) {
+  if (["APPROVED", "COMPLETED", "SUCCESSFUL", "SUCCESS"].includes(value)) {
     return "wallet-status-success";
   }
   if (value === "PROCESSING") {
     return "wallet-status-processing";
   }
-  if (value === "REJECTED" || value === "CANCELLED" || value === "CANCELED") {
+  if (value === "REVERSED") {
+    return "wallet-status-reversed";
+  }
+  if (value === "REJECTED" || value === "FAILED" || value === "CANCELLED" || value === "CANCELED") {
     return "wallet-status-rejected";
   }
   return "wallet-status-pending";
@@ -5344,11 +5447,17 @@ function walletStatusClass(status) {
 
 function formatWalletRequestStatus(status) {
   const value = String(status || "").toUpperCase();
-  if (["APPROVED", "COMPLETED", "SUCCESSFUL"].includes(value)) {
+  if (["APPROVED", "COMPLETED", "SUCCESSFUL", "SUCCESS"].includes(value)) {
     return "Successful";
   }
   if (value === "PROCESSING") {
     return "Processing";
+  }
+  if (value === "FAILED") {
+    return "Failed";
+  }
+  if (value === "REVERSED") {
+    return "Reversed";
   }
   if (value === "REJECTED") {
     return "Rejected";
@@ -5357,6 +5466,28 @@ function formatWalletRequestStatus(status) {
     return "Cancelled";
   }
   return value ? "Pending" : "";
+}
+
+function applyRouteTarget() {
+  const pathname = String(window.location?.pathname || "");
+  if (/^\/admin\/withdrawals\/[^/]+\/?$/.test(pathname) && state.user?.role === "admin") {
+    state.activeTab = "settings";
+    state.routeScrollSection = "finance";
+  }
+}
+
+function scrollToRouteSection() {
+  const section = state.routeScrollSection;
+  if (!section) {
+    return;
+  }
+  state.routeScrollSection = "";
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-section="${section}"]`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
 }
 
 function isWalletRequestHistoryItem(item) {
@@ -5558,6 +5689,7 @@ function renderDashboardShell() {
 
   bindDashboardActions();
   bindModalActions();
+  scrollToRouteSection();
   document.querySelectorAll("[data-tab]").forEach((button) => {
     button.addEventListener("click", async () => {
       const nextTab = button.dataset.tab;
@@ -5823,11 +5955,38 @@ function bindDashboardActions() {
         ...state.actionModal,
         currency: button.dataset.walletCurrency,
       };
+      if (button.dataset.walletCurrency === "NGN" && state.actionModal?.type === "withdraw") {
+        void loadPaymentBanks().then(() => render()).catch((error) => showError(error.message));
+      }
       render();
     });
   });
 
+  const bankCodeInput = document.getElementById("wallet-bank-code-input");
+  if (bankCodeInput) {
+    bankCodeInput.addEventListener("change", () => {
+      state.resolvedBankAccount = null;
+      state.actionModal = {
+        ...state.actionModal,
+        bankCode: bankCodeInput.value,
+      };
+      render();
+    });
+  }
+
   const walletSubmitButton = document.getElementById("wallet-submit-btn");
+  const accountInput = document.getElementById("wallet-account-input");
+  if (accountInput && walletSubmitButton?.dataset.walletCurrencySelected === "NGN") {
+    accountInput.addEventListener("input", () => {
+      state.resolvedBankAccount = null;
+    });
+  }
+
+  const resolveBankButton = document.getElementById("wallet-resolve-bank-btn");
+  if (resolveBankButton) {
+    resolveBankButton.addEventListener("click", resolveSelectedBankAccount);
+  }
+
   if (walletSubmitButton) {
     const amountInput = document.getElementById("wallet-amount-input");
     updateWalletEquivalentPreview(amountInput, walletSubmitButton.dataset.walletCurrencySelected || state.actionModal?.currency || "USDT");
@@ -5853,11 +6012,7 @@ function bindDashboardActions() {
             address: document.getElementById("wallet-address-input")?.value?.trim() || "",
             network: document.getElementById("wallet-network-input")?.value?.trim() || "",
           }
-        : {
-            bankName: document.getElementById("wallet-bank-input")?.value?.trim() || "",
-            accountName: document.getElementById("wallet-account-name-input")?.value?.trim() || "",
-            accountNumber: document.getElementById("wallet-account-input")?.value?.replace(/\D/g, "").trim() || "",
-          };
+        : null;
 
       if (!amount || Number(amount) <= 0) {
         showError("Enter a valid amount.");
@@ -5867,8 +6022,9 @@ function bindDashboardActions() {
         showError("Enter wallet address and network.");
         return;
       }
-      if (mode === "withdraw" && currency === "NGN" && (!destination.bankName || !destination.accountName || !/^\d{10}$/.test(destination.accountNumber))) {
-        showError("Enter bank name, account name, and 10-digit account number.");
+      const bankAccount = state.resolvedBankAccount || (getSavedBankAccount()?.verified ? getSavedBankAccount() : null);
+      if (mode === "withdraw" && currency === "NGN" && !bankAccount?.id) {
+        showError("Resolve your bank account first.");
         return;
       }
 
@@ -5894,7 +6050,7 @@ function bindDashboardActions() {
             currency,
             amount,
             destination,
-            saveBankAccount: currency === "NGN" ? document.getElementById("wallet-save-bank-input")?.checked !== false : false,
+            bankAccountId: currency === "NGN" ? bankAccount.id : "",
           }),
         });
         await loadFinancialDashboard();
@@ -5924,6 +6080,10 @@ function bindDashboardActions() {
 
   document.querySelectorAll("[data-admin-withdrawal-process]").forEach((button) => {
     button.addEventListener("click", () => submitAdminFinanceAction("processWithdrawal", button.dataset.adminWithdrawalProcess));
+  });
+
+  document.querySelectorAll("[data-admin-withdrawal-approve]").forEach((button) => {
+    button.addEventListener("click", () => submitAdminFinanceAction("approveWithdrawal", button.dataset.adminWithdrawalApprove));
   });
 
   document.querySelectorAll("[data-admin-withdrawal-complete]").forEach((button) => {
@@ -6450,6 +6610,7 @@ async function bootstrap() {
       setSelectedExchange(state.user.activeExchange);
     }
     if (state.user) {
+      applyRouteTarget();
       await loadDashboardData();
     } else {
       disconnectWatchSocket();

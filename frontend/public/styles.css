@@ -2448,6 +2448,16 @@ body[data-theme="dark"] .mirror-guide-pill {
   color: #b91c1c;
 }
 
+.wallet-status-reversed {
+  background: rgba(249, 115, 22, 0.16);
+  color: #c2410c;
+}
+
+.verified-bank-card {
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(16, 185, 129, 0.08);
+}
+
 .wallet-instructions strong,
 .wallet-instructions code {
   color: var(--text);
