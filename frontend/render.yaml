@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: trade-frontend
+    runtime: static
+    plan: free
+    buildCommand: npm install && npm run build
+    staticPublishPath: public
+    envVars:
+      - key: TRADE_API_BASE_URL
+        sync: false

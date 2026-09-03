@@ -15,3 +15,5 @@ By default, the frontend calls API routes on the same origin. For a separate fro
 - Build command: `npm install && npm run build`
 - Publish directory: `public`
 - Environment variable: `TRADE_API_BASE_URL=https://trade-backend-tsjf.onrender.com`
+
+Render rebuilds `public/config.js` from `TRADE_API_BASE_URL`, so redeploy the static site after changing this value.
