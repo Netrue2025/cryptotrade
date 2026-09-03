@@ -2,3 +2,5 @@ data/app-db.json
 .env
 .env.*
 !.env.example
+node_modules/
+.tmp_server_*.log
